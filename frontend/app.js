@@ -1,0 +1,277 @@
+// Phase 7 前端邏輯（2026-07-26）。與 src/api/main.py 的 REST API 契約保持一致：
+//   POST /api/upload                  上傳影片 + 觸發完整流程
+//   GET  /api/jobs/{id}/status        查詢狀態＋各階段耗時
+//   GET  /api/jobs/{id}/results       取得指定通道的匯出結果
+//   GET  /api/jobs/{id}/frame         取得指定時間戳記最接近的真實 OCR 影格
+//   POST /api/jobs/{id}/export        匯出 CSV
+//   GET  /api/environment             一鍵確認環境是否齊全（Phase 7 測試用，見下方）
+//
+// 本檔案分兩部分：
+//   1) 「測試用工具區」相關邏輯（環境檢查、參數/通道選擇、階段耗時顯示）——
+//      這部分連同 index.html 裡的 <section id="test-panel"> 在成品完成後
+//      會被使用者要求整個移除，移除方式：刪掉該 <section> + 這裡對應的
+//      事件綁定與函式即可，不影響下面「核心功能」的任何程式碼。
+//   2) 「核心功能」：檔案選取／開始／輪詢狀態／顯示結果／匯出——這部分是
+//      正式成品也會保留的功能。
+
+const API_BASE = ""; // 與後端同源（由 FastAPI 掛載靜態檔案提供），見 src/api/main.py
+
+let currentJobId = null;
+let pollTimer = null;
+let lastAvailableChannels = [];
+
+const MAX_DISPLAY_ROWS = 200; // 結果筆數可能高達上萬筆，畫面只顯示前 N 筆，完整資料請用匯出功能
+
+// ------------------------------------------------------------------
+// 1) 測試用工具區
+// ------------------------------------------------------------------
+
+function toggleChannel1Engines() {
+  const enabled = document.getElementById("channel1-toggle").checked;
+  document.querySelectorAll(".c1-engine").forEach((cb) => { cb.disabled = !enabled; });
+}
+
+async function runEnvironmentCheck() {
+  const btn = document.getElementById("env-check-btn");
+  const list = document.getElementById("env-check-results");
+  btn.disabled = true;
+  list.innerHTML = "<li>檢查中...（KoNLPy 引擎初始化可能需要幾秒到十幾秒，請稍候）</li>";
+  try {
+    const resp = await fetch(`${API_BASE}/api/environment`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const body = await resp.json();
+    list.innerHTML = "";
+    for (const item of body.items) {
+      const li = document.createElement("li");
+      li.className = item.ok ? "ok" : "fail";
+      li.textContent = `${item.ok ? "有" : "無"}｜${item.name}｜${item.detail}`;
+      list.appendChild(li);
+    }
+  } catch (e) {
+    list.innerHTML = `<li class="fail">檢查失敗：${e.message}</li>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderStageTiming(stages) {
+  const tbody = document.querySelector("#stage-timing-table tbody");
+  tbody.innerHTML = "";
+  for (const s of stages) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${escapeHtml(s.stage)}</td>` +
+      `<td>${s.ok ? "成功" : "失敗"}</td>` +
+      `<td>${s.elapsed_sec}</td>` +
+      `<td>${escapeHtml(s.error || "")}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+// ------------------------------------------------------------------
+// 2) 核心功能
+// ------------------------------------------------------------------
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+async function startJob() {
+  const fileInput = document.getElementById("video-file");
+  if (!fileInput.files.length) {
+    alert("請先選取影片檔案");
+    return;
+  }
+
+  const form = new FormData();
+  form.append("file", fileInput.files[0]);
+
+  // --- 測試用參數（見 1) 段落說明，成品完成後這些欄位會被移除或改為固定值）---
+  form.append("denoise", document.getElementById("param-denoise").checked);
+  form.append("sample_rate_fps", document.getElementById("param-fps").value || "1.0");
+
+  const maxFrames = document.getElementById("param-max-frames").value;
+  if (maxFrames) form.append("max_frames", maxFrames);
+  const model = document.getElementById("param-model").value;
+  if (model) form.append("model", model);
+  const baseUrl = document.getElementById("param-base-url").value;
+  if (baseUrl) form.append("base_url", baseUrl);
+  const minConfidence = document.getElementById("param-min-confidence").value;
+  if (minConfidence) form.append("min_confidence", minConfidence);
+  const dedupGap = document.getElementById("param-dedup-gap").value;
+  if (dedupGap) form.append("dedup_max_gap_sec", dedupGap);
+  const clahe = document.getElementById("param-clahe").value;
+  if (clahe) form.append("clahe_clip_limit", clahe);
+  const denoiseStrength = document.getElementById("param-denoise-strength").value;
+  if (denoiseStrength) form.append("denoise_strength", denoiseStrength);
+
+  const channel1On = document.getElementById("channel1-toggle").checked;
+  form.append("include_channel1", channel1On);
+  if (channel1On) {
+    const engines = Array.from(document.querySelectorAll(".c1-engine:checked")).map((cb) => cb.value);
+    form.append("channel1_engines", engines.join(","));
+  }
+  form.append("include_channel2", document.getElementById("channel2-toggle").checked);
+  form.append("include_channel3", document.getElementById("channel3-toggle").checked);
+  // --- 測試用參數結束 ---
+
+  const startBtn = document.getElementById("start-btn");
+  startBtn.disabled = true;
+  document.getElementById("job-status-line").textContent = "上傳中...";
+  document.getElementById("results-controls").hidden = true;
+  document.getElementById("results-table").hidden = true;
+  lastAvailableChannels = [];
+
+  try {
+    const resp = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: form });
+    const body = await resp.json();
+    if (!resp.ok) throw new Error(body.detail || `HTTP ${resp.status}`);
+
+    currentJobId = body.job_id;
+    document.getElementById("job-status-line").textContent =
+      `工作已建立：${currentJobId}（狀態：${body.status}）`;
+    startPolling();
+  } catch (e) {
+    document.getElementById("job-status-line").textContent = `上傳失敗：${e.message}`;
+    startBtn.disabled = false;
+  }
+}
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(pollStatus, 2000);
+  pollStatus();
+}
+
+async function pollStatus() {
+  if (!currentJobId) return;
+  const resp = await fetch(`${API_BASE}/api/jobs/${currentJobId}/status`);
+  if (!resp.ok) return;
+  const body = await resp.json();
+
+  document.getElementById("job-status-line").textContent =
+    `工作 ${currentJobId}｜狀態：${body.status}｜目前階段：${body.current_stage || "-"}` +
+    (body.error ? `｜錯誤：${body.error}` : "");
+
+  renderStageTiming(body.stages || []);
+  updateChannelSelect(body.available_channels || []);
+
+  if (body.status === "done" || body.status === "failed") {
+    clearInterval(pollTimer);
+    pollTimer = null;
+    document.getElementById("start-btn").disabled = false;
+  }
+}
+
+function updateChannelSelect(channels) {
+  const changed = JSON.stringify(channels) !== JSON.stringify(lastAvailableChannels);
+  if (!changed) return;
+  lastAvailableChannels = channels;
+
+  const select = document.getElementById("channel-select");
+  const previousValue = select.value;
+  select.innerHTML = "";
+  for (const ch of channels) {
+    const opt = document.createElement("option");
+    opt.value = ch;
+    opt.textContent = ch;
+    select.appendChild(opt);
+  }
+  if (channels.includes(previousValue)) select.value = previousValue;
+
+  const controls = document.getElementById("results-controls");
+  if (channels.length > 0) {
+    controls.hidden = false;
+    loadResultsForSelectedChannel();
+  } else {
+    controls.hidden = true;
+  }
+}
+
+async function loadResultsForSelectedChannel() {
+  const channel = document.getElementById("channel-select").value;
+  if (!currentJobId || !channel) return;
+
+  const resp = await fetch(
+    `${API_BASE}/api/jobs/${currentJobId}/results?channel=${encodeURIComponent(channel)}`,
+  );
+  if (!resp.ok) return;
+  const body = await resp.json();
+  renderResultsTable(body);
+}
+
+function renderResultsTable(body) {
+  const table = document.getElementById("results-table");
+  const tbody = table.querySelector("tbody");
+  tbody.innerHTML = "";
+  table.hidden = false;
+
+  const rows = body.records.slice(0, MAX_DISPLAY_ROWS);
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+
+    const imgTd = document.createElement("td");
+    if (r.timestamp_start !== null && r.timestamp_start !== undefined) {
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.className = "frame-thumb";
+      img.alt = "影格截圖";
+      img.src = `${API_BASE}/api/jobs/${currentJobId}/frame?timestamp=${r.timestamp_start}`;
+      img.onerror = () => { imgTd.textContent = "(無截圖)"; };
+      imgTd.appendChild(img);
+    } else {
+      imgTd.textContent = "(無時間戳記)";
+    }
+    tr.appendChild(imgTd);
+
+    for (const field of ["原文", "詞性", "中文", "例句"]) {
+      const td = document.createElement("td");
+      td.textContent = r[field] ?? "";
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+
+  const note = document.getElementById("results-note");
+  note.textContent = body.records.length > MAX_DISPLAY_ROWS
+    ? `顯示前 ${MAX_DISPLAY_ROWS} 筆（共 ${body.records.length} 筆），完整資料請使用「匯出檔案」`
+    : `共 ${body.records.length} 筆`;
+}
+
+async function exportResults() {
+  const channel = document.getElementById("channel-select").value;
+  if (!currentJobId || !channel) return;
+
+  const resp = await fetch(
+    `${API_BASE}/api/jobs/${currentJobId}/export?format=csv&channel=${encodeURIComponent(channel)}`,
+    { method: "POST" },
+  );
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    alert(`匯出失敗：${err.detail || resp.statusText}`);
+    return;
+  }
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${currentJobId}_${channel}_export.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// ------------------------------------------------------------------
+// 事件綁定
+// ------------------------------------------------------------------
+
+document.getElementById("env-check-btn").addEventListener("click", runEnvironmentCheck);
+document.getElementById("channel1-toggle").addEventListener("change", toggleChannel1Engines);
+document.getElementById("start-btn").addEventListener("click", startJob);
+document.getElementById("channel-select").addEventListener("change", loadResultsForSelectedChannel);
+document.getElementById("export-btn").addEventListener("click", exportResults);
+
+toggleChannel1Engines();

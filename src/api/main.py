@@ -1,0 +1,315 @@
+"""
+Step 7 後端：REST API（Phase 6 已實作）
+==========================================
+提供前端呼叫之標準化 API，串接完整 pipeline（Phase 1-3 + Channel 1/2/3）。
+
+使用者決策紀錄（2026-07-26，見 PROJECT_NOTES.md 第 15 節）：
+  1) `POST /api/upload` 真正接受任意影片上傳，並觸發完整流程（見
+     `src/api/pipeline_runner.py::run_full_pipeline`），而不只是包裝既有
+     的 10 支測試影片。
+  2) `GET /api/jobs/{job_id}/results` 預設回傳一組通道（`channel3`），
+     其餘 5 組（channel1_okt/komoran/kkma/mecab、channel2）透過
+     `?channel=` 查詢參數指定——因為「最終保留哪個通道」明確延後到
+     專案尾聲才決定，API 不預先替使用者做這個選擇。
+  3) 工作狀態採輕量持久化（`src/api/job_store.py`，SQLite），伺服器
+     重啟後仍可查詢先前工作的進度與結果。
+  4) 匯出只支援 CSV；Anki 本身就是吃 CSV 匯入，不需要另外接
+     `src/export/anki_exporter.py`（該模組目前仍未經測試，Phase 6 故意
+     不擴大範圍去驗證它）。
+
+**重要限制**：本檔案可在沙盒中完整驗證路由的請求/回應契約與 job 狀態機
+（見 `tests/test_api_main.py`，皆用假的背景工作函式，不需要真正 GPU/
+Ollama）。但 `/api/upload` 觸發的背景流程一旦真的執行 Phase 3 OCR，需要
+真實 GPU；Channel 2/3 則需要本機已啟動的 Ollama——這些「真正上傳一支
+影片、等它跑完」的端到端驗證，只能由使用者在本機（RTX 4060 + Ollama）
+執行，沙盒無法代勞。
+"""
+
+from __future__ import annotations
+
+import shutil
+import sys
+import uuid
+from pathlib import Path
+from typing import Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+# Phase 7 前端頁面目錄（frontend/index.html + app.js + style.css）。
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+
+from config.settings import API_CONFIG, DICTIONARY_CONFIG
+from src.api.environment_check import check_environment
+from src.api.job_store import JobStore
+from src.api.pipeline_runner import run_full_pipeline
+from src.api.results_reader import (
+    ChannelResultsNotFound,
+    VALID_CHANNELS,
+    export_csv_path,
+    list_available_channels,
+    read_channel_results,
+    resolve_frame_path,
+)
+
+
+def create_app(
+    job_db_path: Optional[str] = None,
+    data_output_root: Optional[str] = None,
+    upload_dir: Optional[str] = None,
+) -> FastAPI:
+    """
+    建立一份 FastAPI app 實例。
+
+    刻意用工廠函式（而非只匯出一個模組層級的 `app`）讓 `tests/test_api_main.py`
+    可以每個測試各自建立一份指向暫存目錄的 app + JobStore，彼此互不干擾、
+    也不會污染真正的 `data/jobs.sqlite3`。真正部署（`uvicorn src.api.main:app`）
+    時則使用檔案底部、依 `config/settings.py` 設定建立的預設 `app`。
+    """
+    job_db_path = job_db_path or API_CONFIG["job_db_path"]
+    data_output_root = data_output_root or API_CONFIG["data_output_root"]
+    upload_dir = Path(upload_dir or API_CONFIG["upload_dir"])
+
+    app = FastAPI(title="OCR Subtitle Learning System")
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    )
+
+    app.state.job_store = JobStore(job_db_path)
+    app.state.data_output_root = data_output_root
+    app.state.upload_dir = upload_dir
+
+    # ------------------------------------------------------------------
+    # Phase 7：測試期間方便操作的功能區域（使用者決策紀錄，2026-07-26，見
+    # PROJECT_NOTES.md 第 16 節）——成品完成後會要求整個移除。移除方式：
+    # 拿掉這個路由 + `src/api/environment_check.py` 這個檔案即可，不影響
+    # 其他任何路由。
+    # ------------------------------------------------------------------
+    @app.get("/api/environment")
+    async def get_environment(
+        request: Request,
+        dict_db: Optional[str] = Query(default=None),
+        base_url: Optional[str] = Query(default=None),
+    ):
+        """一鍵確認所需環境是否齊全（只回報有/無 + 簡短細節，不要求使用者判讀技術訊息）。"""
+        dict_db_path = dict_db or DICTIONARY_CONFIG.get("index_db_path")
+        ollama_base_url = base_url or API_CONFIG["llm_base_url"]
+        return {"items": check_environment(dict_db_path, ollama_base_url)}
+
+    @app.post("/api/upload")
+    async def upload_video(
+        background_tasks: BackgroundTasks,
+        request: Request,
+        file: UploadFile = File(...),
+        include_channel1: bool = Form(True),
+        channel1_engines: Optional[str] = Form(
+            None, description="逗號分隔的子引擎清單，例如 'okt,mecab'；留空表示全部 4 個",
+        ),
+        include_channel2: bool = Form(True),
+        include_channel3: bool = Form(True),
+        denoise: bool = Form(True),
+        sample_rate_fps: float = Form(1.0),
+        max_frames: Optional[int] = Form(None, description="測試用：只取前 N 張影格，加快處理速度"),
+        dict_db: Optional[str] = Form(None),
+        model: Optional[str] = Form(None, description="LLM 模型名稱，留空使用 config 預設值"),
+        base_url: Optional[str] = Form(None, description="Ollama 伺服器位址，留空使用 config 預設值"),
+        min_confidence: Optional[float] = Form(None, description="OCR 最低信心值，留空使用 config 預設值"),
+        dedup_max_gap_sec: Optional[float] = Form(None, description="去重時間間隔（秒），留空使用 config 預設值"),
+        clahe_clip_limit: Optional[float] = Form(None, description="CLAHE 對比強化強度，留空使用 config 預設值"),
+        denoise_strength: Optional[int] = Form(None, description="去雜訊強度，留空使用 config 預設值"),
+    ):
+        """
+        接收影片檔案，儲存後立即觸發完整流程，回傳 job_id 供後續查詢。
+
+        `include_channel1`/`channel1_engines`/`include_channel3`/`denoise`/
+        `sample_rate_fps`/`max_frames`/`model`/`base_url`/`min_confidence`/
+        `dedup_max_gap_sec`/`clahe_clip_limit`/`denoise_strength` 皆為 Phase 7
+        新增的「測試期間方便操作」參數（見 PROJECT_NOTES.md 第 16 節），成品
+        完成後使用者會要求移除或改為固定值。
+        """
+        job_store: JobStore = request.app.state.job_store
+        data_output_root = request.app.state.data_output_root
+        upload_dir: Path = request.app.state.upload_dir
+
+        ext = Path(file.filename or "").suffix.lower()
+        allowed = API_CONFIG["allowed_video_extensions"]
+        if ext not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支援的影片格式：{ext or '(無副檔名)'}（可用：{allowed}）",
+            )
+
+        job_id = uuid.uuid4().hex
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        saved_path = upload_dir / f"{job_id}{ext}"
+        with open(saved_path, "wb") as out:
+            shutil.copyfileobj(file.file, out)
+
+        job_store.create_job(
+            job_id=job_id, video_id=job_id,
+            original_filename=file.filename or "", include_channel2=include_channel2,
+        )
+
+        engines_list = (
+            [e.strip() for e in channel1_engines.split(",") if e.strip()]
+            if channel1_engines else None
+        )
+        config_overrides = {
+            "min_confidence": min_confidence,
+            "dedup_max_gap_sec": dedup_max_gap_sec,
+            "clahe_clip_limit": clahe_clip_limit,
+            "denoise_strength": denoise_strength,
+        }
+
+        background_tasks.add_task(
+            run_full_pipeline,
+            job_id=job_id,
+            video_path=str(saved_path),
+            job_store=job_store,
+            include_channel1=include_channel1,
+            channel1_engines=engines_list,
+            include_channel2=include_channel2,
+            include_channel3=include_channel3,
+            denoise=denoise,
+            sample_rate_fps=sample_rate_fps,
+            max_frames=max_frames,
+            dict_db=dict_db or DICTIONARY_CONFIG.get("index_db_path"),
+            model=model or API_CONFIG["llm_model"],
+            base_url=base_url or API_CONFIG["llm_base_url"],
+            data_output_root=data_output_root,
+            config_overrides=config_overrides,
+        )
+
+        return {"job_id": job_id, "video_id": job_id, "status": "queued"}
+
+    @app.get("/api/jobs/{job_id}/status")
+    async def get_job_status(job_id: str, request: Request):
+        """查詢處理進度：整體狀態（queued/running/done/failed）+ 各階段的成功/失敗/耗時明細。"""
+        job_store: JobStore = request.app.state.job_store
+        job = job_store.get_job_with_stages(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"找不到工作 job_id={job_id}")
+
+        job["available_channels"] = list_available_channels(
+            request.app.state.data_output_root, job["video_id"],
+        )
+        return job
+
+    @app.get("/api/jobs/{job_id}/results")
+    async def get_job_results(
+        job_id: str,
+        request: Request,
+        channel: str = Query(
+            default=API_CONFIG["default_results_channel"],
+            description=f"六選一：{VALID_CHANNELS}；預設 {API_CONFIG['default_results_channel']}"
+                        "（最終保留哪個通道尚未決定，見 PROJECT_NOTES.md）",
+        ),
+    ):
+        """取得處理完成後的字幕與翻譯結果（預設 channel3，可用 ?channel= 指定其他 5 組結果之一）。"""
+        job_store: JobStore = request.app.state.job_store
+        job = job_store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"找不到工作 job_id={job_id}")
+
+        if channel not in VALID_CHANNELS:
+            raise HTTPException(status_code=400, detail=f"不支援的 channel：{channel}（可用：{VALID_CHANNELS}）")
+
+        try:
+            return read_channel_results(request.app.state.data_output_root, job["video_id"], channel)
+        except ChannelResultsNotFound as e:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{e}（目前工作狀態：{job['status']}，目前階段：{job['current_stage']}）",
+            ) from e
+
+    @app.get("/api/jobs/{job_id}/frame")
+    async def get_job_frame(job_id: str, request: Request, timestamp: float = Query(...)):
+        """
+        取得該工作對應影片、時間戳記最接近 `timestamp` 秒的真實 OCR 影格截圖
+        （Phase 7 新增，見 PROJECT_NOTES.md 第 16 節）。前端可用
+        `GET /api/jobs/{job_id}/results` 回傳的每筆紀錄裡的 `timestamp_start`
+        呼叫本端點，在單字旁顯示對應畫面。
+        """
+        job_store: JobStore = request.app.state.job_store
+        job = job_store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"找不到工作 job_id={job_id}")
+
+        frame_path = resolve_frame_path(request.app.state.data_output_root, job["video_id"], timestamp)
+        if frame_path is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"找不到影片 {job['video_id']} 在時間戳記 {timestamp}s 附近的截圖（frames/manifest.csv 不存在或無影格）",
+            )
+        return FileResponse(frame_path, media_type="image/jpeg")
+
+    @app.post("/api/jobs/{job_id}/export")
+    async def export_job(
+        job_id: str,
+        request: Request,
+        format: str = Query(default="csv"),
+        channel: str = Query(default=API_CONFIG["default_results_channel"]),
+    ):
+        """匯出結果檔案。決策紀錄：只支援 CSV——Anki 本身即透過 CSV 匯入，不另外接 anki_exporter.py。"""
+        if format != "csv":
+            raise HTTPException(
+                status_code=400,
+                detail="目前只支援 format=csv。Anki 可直接匯入 CSV 檔案，不需要額外的 anki 格式（見決策紀錄）。",
+            )
+
+        job_store: JobStore = request.app.state.job_store
+        job = job_store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"找不到工作 job_id={job_id}")
+
+        if channel not in VALID_CHANNELS:
+            raise HTTPException(status_code=400, detail=f"不支援的 channel：{channel}（可用：{VALID_CHANNELS}）")
+
+        try:
+            path = export_csv_path(request.app.state.data_output_root, job["video_id"], channel)
+        except ChannelResultsNotFound as e:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{e}（目前工作狀態：{job['status']}，目前階段：{job['current_stage']}）",
+            ) from e
+
+        return FileResponse(
+            path, media_type="text/csv", filename=f"{job['video_id']}_{channel}_export.csv",
+        )
+
+    # 掛載 Phase 7 前端頁面（放在所有 /api/* 路由「之後」註冊，確保 /api/*
+    # 一律先被上面的具名路由比對到，不會被這裡的靜態檔案掛載攔截）。
+    # 開發環境沒有 frontend/ 目錄時（理論上不會發生）就跳過，不讓整個 app
+    # 建立失敗。
+    if _FRONTEND_DIR.exists():
+        app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
+
+    return app
+
+
+try:
+    app = create_app()
+except Exception:  # noqa: BLE001
+    # 已知的沙盒限制（與 scripts/build_dictionary_index.py 建索引時遇到的
+    # SQLite "disk I/O error" 同一原因：沙盒的 FUSE 掛載目錄不支援 SQLite
+    # 一般的寫入/journal 機制，見 PROJECT_NOTES.md）。真正部署在使用者本機
+    # 一般檔案系統上不會有此問題，這裡的 try/except 只是避免此限制讓整個
+    # 模組在沙盒測試環境下完全無法 import；測試一律改用 create_app() 搭配
+    # 暫存目錄路徑（見 tests/test_api_main.py），不依賴這個模組層級的 app。
+    #
+    # 2026-07-26 修正：這裡原本完全不印出例外內容，導致使用者本機真的遇到
+    # 「缺少 python-multipart」問題時，只看到 uvicorn 端「TypeError: 'NoneType'
+    # object is not callable」這種無法debug的錯誤，看不出真正原因。改成先把
+    # 完整 traceback 印到 stderr 再退回 app=None——沙盒的已知限制仍然不會讓
+    # 模組整個匯入失敗，但使用者本機若因為其他原因（例如套件未安裝）真的
+    # 建立失敗，終端機會直接看到清楚的錯誤訊息，而不是被完全吃掉。
+    import traceback
+    print("=" * 60, file=sys.stderr)
+    print("[錯誤] create_app() 建立失敗，以下為完整錯誤內容：", file=sys.stderr)
+    traceback.print_exc()
+    print("=" * 60, file=sys.stderr)
+    app = None  # type: ignore[assignment]

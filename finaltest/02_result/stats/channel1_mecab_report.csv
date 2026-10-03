@@ -1,0 +1,2 @@
+channel,video_id,run_timestamp,total_time_sec,word_count_total,dict_hit_count,dict_hit_rate,llm_call_count,llm_fallback_success_count,llm_fallback_fail_count,error_count,module_time_load,module_time_clean,module_time_dedup,module_time_tokenizer_init,module_time_tokenize,module_time_dict_lookup,module_time_write_output
+channel1_mecab,469b01ac2a3549dcaa5e920965544875,2026-08-29T13:17:16,31.388733386993408,3113,2570,0.8255701895277867,0,0,0,0,0.05477309226989746,0.004878044128417969,0.0036163330078125,0.005184173583984375,0.4519217014312744,30.63913059234619,0.15151619911193848

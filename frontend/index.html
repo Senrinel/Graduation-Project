@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <title>OCR 字幕學習系統</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <h1>OCR 字幕學習系統</h1>
+
+  <!--
+    Phase 7：測試期間方便操作的功能區域（使用者決策紀錄，2026-07-26，見
+    PROJECT_NOTES.md 第 16 節）。成品完成後使用者會要求移除這整個
+    <section id="test-panel">，移除時不影響下面 <section id="main-panel">
+    的任何必要功能（檔案選取／開始／結果顯示／匯出）。
+  -->
+  <section id="test-panel" class="test-panel">
+    <h2>測試用工具區 <span class="badge">成品完成後將移除</span></h2>
+
+    <div class="test-block">
+      <button id="env-check-btn" type="button">一鍵確認環境是否齊全</button>
+      <ul id="env-check-results" class="env-list"></ul>
+    </div>
+
+    <div class="test-block">
+      <h3>參數調整</h3>
+      <div class="param-grid">
+        <label>取樣率 (FPS)
+          <input type="number" id="param-fps" value="1.0" step="0.1" min="0.1" />
+        </label>
+        <label>最大影格數（留空＝不限制）
+          <input type="number" id="param-max-frames" min="1" />
+        </label>
+        <label>LLM 模型名稱（留空＝預設）
+          <input type="text" id="param-model" placeholder="qwen2.5:7b" />
+        </label>
+        <label>Ollama 位址（留空＝預設）
+          <input type="text" id="param-base-url" placeholder="http://localhost:11434" />
+        </label>
+        <label>OCR 最低信心值（留空＝預設）
+          <input type="number" id="param-min-confidence" min="0" max="1" step="0.05" />
+        </label>
+        <label>去重時間間隔／秒（留空＝預設）
+          <input type="number" id="param-dedup-gap" min="0" step="0.1" />
+        </label>
+        <label>CLAHE 對比強化強度（留空＝預設）
+          <input type="number" id="param-clahe" min="0" step="0.5" />
+        </label>
+        <label>去雜訊強度（留空＝預設）
+          <input type="number" id="param-denoise-strength" min="0" step="1" />
+        </label>
+      </div>
+      <label class="checkbox-label">
+        <input type="checkbox" id="param-denoise" checked /> 是否去雜訊 (denoise)
+      </label>
+    </div>
+
+    <div class="test-block">
+      <h3>通道選擇</h3>
+      <label class="checkbox-label">
+        <input type="checkbox" id="channel1-toggle" checked /> Channel 1（本地套件）
+      </label>
+      <div id="channel1-engines" class="engine-list">
+        <label><input type="checkbox" class="c1-engine" value="okt" checked /> Okt</label>
+        <label><input type="checkbox" class="c1-engine" value="komoran" checked /> Komoran</label>
+        <label><input type="checkbox" class="c1-engine" value="kkma" checked /> Kkma</label>
+        <label><input type="checkbox" class="c1-engine" value="mecab" checked /> Mecab-ko</label>
+      </div>
+      <label class="checkbox-label">
+        <input type="checkbox" id="channel2-toggle" checked /> Channel 2（本地 LLM，耗時可能近 1 小時）
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="channel3-toggle" checked /> Channel 3（混合通道）
+      </label>
+    </div>
+
+    <div class="test-block">
+      <h3>各流程階段耗時</h3>
+      <table id="stage-timing-table">
+        <thead><tr><th>階段</th><th>狀態</th><th>耗時（秒）</th><th>錯誤訊息</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 正式核心介面：檔案選取／開始／結果顯示／匯出，不受上方測試工具區影響 -->
+  <section id="main-panel">
+    <h2>影片處理</h2>
+    <div class="upload-row">
+      <input type="file" id="video-file" accept=".mkv,.mp4,.mov,.avi" />
+      <button id="start-btn" type="button">開始</button>
+    </div>
+    <p id="job-status-line"></p>
+
+    <div id="results-controls" hidden>
+      <label>顯示通道：
+        <select id="channel-select"></select>
+      </label>
+      <button id="export-btn" type="button">匯出檔案</button>
+    </div>
+
+    <table id="results-table" hidden>
+      <thead>
+        <tr><th>影片截圖</th><th>韓文單字</th><th>詞性</th><th>翻譯</th><th>例句</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <p id="results-note"></p>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
