@@ -1,9 +1,12 @@
 @echo off
-chcp 65001 >nul
-echo [啟動中] 正在呼叫 PowerShell 啟動韓文學習字幕擷取系統...
-powershell -ExecutionPolicy Bypass -File "%~dp0start.ps1"
-if %ERRORLEVEL% NEQ 0 (
+setlocal
+title Korean Learning Subtitle Extractor
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start.ps1" %*
+if errorlevel 1 (
     echo.
-    echo [提示] 若啟動失敗，請先以管理員身份執行部署腳本 deploy.ps1
+    echo [ERROR] System failed to start.
+    echo Please make sure you have executed deploy.ps1 first.
+    echo.
     pause
 )
+endlocal

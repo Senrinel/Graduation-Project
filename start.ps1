@@ -1,4 +1,4 @@
-﻿﻿<#
+﻿<#
 .SYNOPSIS
     韓文學習字幕擷取專案 - 一鍵快速啟動腳本 (Windows PowerShell)
 .DESCRIPTION
