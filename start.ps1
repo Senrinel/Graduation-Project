@@ -54,12 +54,9 @@ Write-Host "服務網址: $url" -ForegroundColor Green
 Write-Host "提示: 按 Ctrl + C 可隨時中斷並關閉服務" -ForegroundColor DarkGray
 Write-Host "============================================================`n" -ForegroundColor Cyan
 
-# 於背景稍微延遲啟動瀏覽器，確保伺服器監聽埠已就緒
-Start-Job -ScriptBlock {
-    param($targetUrl)
-    Start-Sleep -Seconds 2
-    Start-Process $targetUrl
-} -ArgumentList $url | Out-Null
+# 於背景稍微延遲啟動預設瀏覽器（雙重保證彈出頁面）
+$browserCmd = "Start-Sleep -Seconds 1; Start-Process '$url'"
+Start-Process "powershell.exe" -ArgumentList "-NoProfile", "-WindowStyle", "Hidden", "-Command", $browserCmd
 
 # 啟動 Uvicorn 伺服器
 & $venvPython -m uvicorn src.api.main:app --host $HostIP --port $Port

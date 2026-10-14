@@ -110,7 +110,7 @@ try {
     }
     
     Write-Host "正在安裝套件（包含 EasyOCR、KoNLPy、FastAPI 等），初次執行可能需要數分鐘..." -ForegroundColor Gray
-    & $venvPython -m pip install --prefer-binary -r $reqFile
+    & $venvPython -m pip install --prefer-binary --extra-index-url https://download.pytorch.org/whl/cu126 -r $reqFile
     if ($LASTEXITCODE -ne 0) {
         throw [System.InvalidOperationException]"pip install 執行失敗，結束碼為 $LASTEXITCODE。若缺少特定 C/C++ 編譯環境，請優先使用官方預編譯二進位 Wheel 套件或推薦之 Python 3.10-3.12 版本。"
     }
@@ -119,9 +119,23 @@ try {
     Write-Fail "套件依賴安裝失敗" $_.Exception
 }
 
-# 4. 硬體運算環境檢測 (GPU/CPU)
+# 4. 硬體運算環境檢測 (GPU/CPU) 與自動修復
 Write-Step "4/7 偵測硬體運算加速裝置 (GPU / CPU)"
 try {
+    $gpuProbeScript = "from src.ocr.gpu_check import check_nvidia_hardware, detect_compute_device; has_hw, hw = check_nvidia_hardware(); use_gpu, _, _ = detect_compute_device(verbose=False); print(f'HAS_HW={has_hw};HW={hw};USE_GPU={use_gpu}')"
+    $probeOutput = & $venvPython -c $gpuProbeScript
+    $hasHw = $probeOutput -match "HAS_HW=True"
+    $useGpu = $probeOutput -match "USE_GPU=True"
+    if ($hasHw -and -not $useGpu) {
+        Write-Warn "偵測到本機具有實體 NVIDIA 顯示卡，但目前 PyTorch 缺少 CUDA 支援（為 CPU 版）。"
+        Write-Host "正在為您自動下載並修復安裝 NVIDIA CUDA 12.6 加速版 PyTorch..." -ForegroundColor Cyan
+        & $venvPython -m pip install --force-reinstall --no-deps torch torchvision --index-url https://download.pytorch.org/whl/cu126
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "已成功修復 PyTorch CUDA GPU 加速支援！"
+        } else {
+            Write-Warn "CUDA 版 PyTorch 安裝失敗，系統將維持 CPU 降級相容模式。"
+        }
+    }
     $gpuCheckScript = "from src.ocr.gpu_check import detect_compute_device; detect_compute_device(verbose=True)"
     & $venvPython -c $gpuCheckScript
 } catch {

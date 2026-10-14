@@ -40,12 +40,34 @@ def get_gpu_info() -> list[dict]:
     return infos
 
 
+def check_nvidia_hardware() -> tuple[bool, str]:
+    """
+    檢查作業系統中是否實體存在 NVIDIA 顯示卡硬體（透過 nvidia-smi 查詢）。
+    """
+    import shutil
+    import subprocess
+
+    cmd = shutil.which("nvidia-smi")
+    if not cmd:
+        return False, "未偵測到 nvidia-smi 工具"
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return True, proc.stdout.strip().replace("\r", "").split("\n")[0]
+    except Exception as e:
+        return False, str(e)
+    return False, "nvidia-smi 查無可用 GPU 裝置"
+
+
 def detect_compute_device(verbose: bool = True) -> tuple[bool, str, list[dict]]:
     """
     偵測可用的硬體運算裝置。
 
     優先檢查 GPU 是否可用；若不可用則自動降級為 CPU。
-    不論使用何種硬體，皆依專案標準格式印出日誌。
+    若系統實體具備 NVIDIA GPU 但 PyTorch 缺少 CUDA 支援，主動輸出修復指引。
 
     Args:
         verbose: 是否於標準輸出印出詳細硬體資訊。
@@ -72,11 +94,17 @@ def detect_compute_device(verbose: bool = True) -> tuple[bool, str, list[dict]]:
             print("=" * 60)
     else:
         device_type = "cpu"
+        has_hw, hw_name = check_nvidia_hardware()
         if verbose:
             print("=" * 60)
-            print("[硬體運算裝置] 未偵測到可用 GPU（torch.cuda.is_available() == False）。")
-            print("系統自動降級相容：改用 CPU 進行運算（注意：逐影格 OCR 辨識耗時可能較長）。")
-            print("提示：若希望獲得極速體驗，請確認 NVIDIA 驅動及支援 CUDA 的 PyTorch 安裝。")
+            if has_hw:
+                print(f"[硬體運算警示] 偵測到本機具有實體 NVIDIA 顯示卡 ({hw_name})！")
+                print("但目前環境中的 PyTorch 為 CPU 版本（缺少 CUDA 支援），無法發揮 GPU 效能。")
+                print("修復建議：可執行 .\\deploy.ps1 進行自動修復，或手動執行：")
+                print("pip install --force-reinstall --no-deps torch torchvision --index-url https://download.pytorch.org/whl/cu126")
+            else:
+                print("[硬體運算裝置] 未偵測到可用 GPU（torch.cuda.is_available() == False）。")
+                print("系統自動降級相容：改用 CPU 進行運算（注意：逐影格 OCR 辨識耗時可能較長）。")
             print("=" * 60)
 
     return use_gpu, device_type, gpu_info

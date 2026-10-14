@@ -74,7 +74,24 @@ def create_app(
     data_output_root = data_output_root or API_CONFIG["data_output_root"]
     upload_dir = Path(upload_dir or API_CONFIG["upload_dir"])
 
-    app = FastAPI(title="OCR Subtitle Learning System")
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app_instance: FastAPI):
+        import os
+        if not os.environ.get("NO_BROWSER") and not os.environ.get("PYTEST_CURRENT_TEST"):
+            import threading
+            import time
+            import webbrowser
+
+            def _launch():
+                time.sleep(1.0)
+                webbrowser.open(f"http://{API_CONFIG['host']}:{API_CONFIG['port']}")
+
+            threading.Thread(target=_launch, daemon=True).start()
+        yield
+
+    app = FastAPI(title="OCR Subtitle Learning System", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     )
