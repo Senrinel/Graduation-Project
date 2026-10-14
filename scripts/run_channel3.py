@@ -82,9 +82,13 @@ def run(
         subtitles = deduplicate(cleaned_results)
     print(f"  跨影格去重後剩 {len(subtitles)} 句字幕")
 
-    print(f"  載入斷詞引擎：{ENGINE_NAME}（Channel 3 固定選型）...")
+    print(f"  載入斷詞引擎：{ENGINE_NAME}（Channel 3 預設選型）...")
     with builder.time_module("tokenizer_init"):
-        tokenizer = get_tokenizer(ENGINE_NAME)
+        try:
+            tokenizer = get_tokenizer(ENGINE_NAME)
+        except (RuntimeError, ValueError, ImportError) as e:
+            print(f"  [提示] 引擎 {ENGINE_NAME} 不可用（{e}），Channel 3 自動平穩切換至最佳推薦引擎 Komoran...")
+            tokenizer = get_tokenizer("komoran")
 
     client = llm_client if llm_client is not None else OllamaClient(model=model, base_url=base_url)
 

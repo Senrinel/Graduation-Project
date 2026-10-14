@@ -36,7 +36,7 @@ pip install --upgrade pip -q
 echo "============================================================"
 echo "[步驟 3/5] 安裝專案依賴 (requirements.txt)..."
 echo "============================================================"
-pip install -r requirements.txt
+pip install --prefer-binary -r requirements.txt
 
 echo "============================================================"
 echo "[步驟 4/5] 檢查辭典索引庫 (data/dictionary_index.sqlite3)..."

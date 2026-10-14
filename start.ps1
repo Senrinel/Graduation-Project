@@ -1,4 +1,4 @@
-<#
+﻿﻿<#
 .SYNOPSIS
     韓文學習字幕擷取專案 - 一鍵快速啟動腳本 (Windows PowerShell)
 .DESCRIPTION
@@ -15,6 +15,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$env:PYTHONIOENCODING = "utf-8"
 
 $venvDir = Join-Path $PSScriptRoot ".venv"
 $venvPython = Join-Path $venvDir "Scripts\python.exe"

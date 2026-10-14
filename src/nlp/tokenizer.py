@@ -79,8 +79,14 @@ class _MecabTokenizer:
     """包住 python-mecab-ko（見 LOCAL_TESTING.md 安裝說明）。"""
 
     def __init__(self):
-        from mecab import MeCab  # 延遲匯入，避免未安裝時影響其他引擎使用
-        self._tagger = MeCab()
+        try:
+            from mecab import MeCab  # 延遲匯入，避免未安裝時影響其他引擎使用
+            self._tagger = MeCab()
+        except (ImportError, ModuleNotFoundError) as e:
+            raise RuntimeError(
+                "未安裝 python-mecab-ko 套件或當前環境不支援 MeCab（python-mecab-ko 官方預編譯 wheel 僅支援 Python <= 3.12）。"
+                "建議改用最佳推薦之 Komoran 引擎（或 Okt、Kkma）。"
+            ) from e
 
     def tokenize(self, text: str) -> List[Token]:
         return [

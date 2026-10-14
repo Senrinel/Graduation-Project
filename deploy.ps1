@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     韓文學習字幕擷取專案 - 自動化環境部署與驗證腳本 (Windows PowerShell)
 .DESCRIPTION
@@ -18,6 +18,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$env:PYTHONIOENCODING = "utf-8"
 
 function Write-Step {
     param([string]$Title)
@@ -108,9 +110,9 @@ try {
     }
     
     Write-Host "正在安裝套件（包含 EasyOCR、KoNLPy、FastAPI 等），初次執行可能需要數分鐘..." -ForegroundColor Gray
-    & $venvPython -m pip install -r $reqFile
+    & $venvPython -m pip install --prefer-binary -r $reqFile
     if ($LASTEXITCODE -ne 0) {
-        throw [System.InvalidOperationException]"pip install 執行失敗，結束碼為 $LASTEXITCODE。請檢視上方終端機錯誤日誌。"
+        throw [System.InvalidOperationException]"pip install 執行失敗，結束碼為 $LASTEXITCODE。若缺少特定 C/C++ 編譯環境，請優先使用官方預編譯二進位 Wheel 套件或推薦之 Python 3.10-3.12 版本。"
     }
     Write-Success "所有相依套件安裝完畢"
 } catch {
@@ -131,7 +133,7 @@ Write-Step "5/7 檢測 Java JDK 執行環境"
 try {
     $javaCmd = (Get-Command java -ErrorAction SilentlyContinue).Source
     if ($javaCmd) {
-        $javaVer = (java -version 2>&1 | Select-Object -First 1)
+        $javaVer = (cmd.exe /c "java -version 2>&1" | Select-Object -First 1)
         Write-Success "偵測到 Java 執行環境: $javaVer"
         if ($env:JAVA_HOME) {
             Write-Success "JAVA_HOME 變數已配置: $env:JAVA_HOME"
