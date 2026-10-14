@@ -147,12 +147,12 @@ def _default_stage_functions() -> dict:
     from scripts.run_channel1 import run as channel1
     from scripts.run_channel2 import run as channel2
     from scripts.run_channel3 import run as channel3
-    from src.ocr.gpu_check import get_gpu_info
+    from src.ocr.gpu_check import detect_compute_device
 
     return {
         "phase1": phase1, "phase2": phase2, "phase3": phase3,
         "channel1": channel1, "channel2": channel2, "channel3": channel3,
-        "gpu_check": get_gpu_info,
+        "gpu_check": detect_compute_device,
     }
 
 
@@ -301,15 +301,36 @@ def _run_full_pipeline_impl(
             job_store.update_job(job_id, status="failed", current_stage="phase2", error=err)
             return
 
-        # ---- GPU 檢查（不終止程式的版本，供 API 情境使用）----
+        # ---- 硬體運算裝置偵測（優先 GPU，無則降級 CPU 相容運算）----
         job_store.update_job(job_id, current_stage="gpu_check")
         t0 = time.time()
         try:
-            gpu_info = fns["gpu_check"]()
-            gpu_ok = bool(gpu_info)
-            gpu_err = "" if gpu_ok else "未偵測到可用 GPU，本專案要求 OCR 必須使用 GPU 執行，工作終止。"
+            device_fn = fns.get("gpu_check")
+            if device_fn is None:
+                from src.ocr.gpu_check import detect_compute_device
+                device_fn = detect_compute_device
+            res = device_fn()
+            if isinstance(res, tuple):
+                use_gpu, device_type, gpu_info = res
+            elif isinstance(res, list):
+                gpu_info = res
+                use_gpu = bool(gpu_info)
+            else:
+                use_gpu = bool(res)
+                gpu_info = []
+
+            if use_gpu:
+                names = ", ".join(g["name"] for g in gpu_info) if gpu_info else "CUDA"
+                stage_msg = f"已啟用 GPU 加速運算 ({names})"
+            else:
+                stage_msg = "未偵測到可用 GPU，已自動降級使用 CPU 相容運算"
+
+            gpu_ok = True
+            gpu_err = stage_msg
+            print(f"[管線排程] {stage_msg}")
         except Exception as e:  # noqa: BLE001
             gpu_ok, gpu_err = False, f"{type(e).__name__}: {e}"
+
         job_store.record_stage(
             job_id, "gpu_check", ok=gpu_ok, elapsed_sec=round(time.time() - t0, 2), error=gpu_err,
         )

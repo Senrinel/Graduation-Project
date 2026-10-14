@@ -122,7 +122,8 @@ def test_phase1_failure_stops_everything(tmp_path):
     assert [s["stage"] for s in job["stages"]] == ["phase1"]
 
 
-def test_gpu_unavailable_stops_before_phase3(tmp_path):
+def test_gpu_unavailable_falls_back_to_cpu_and_continues(tmp_path):
+    """未偵測到 GPU 時自動降級使用 CPU 運算，管線不應中斷，應順利完成後續階段。"""
     store = _make_store(tmp_path)
     store.create_job("job1", "job1", "a.mkv")
 
@@ -133,11 +134,26 @@ def test_gpu_unavailable_stops_before_phase3(tmp_path):
     )
 
     job = store.get_job_with_stages("job1")
+    assert job["status"] == "done"
+    gpu_stage = next(s for s in job["stages"] if s["stage"] == "gpu_check")
+    assert gpu_stage["ok"] == 1
+    assert "CPU" in gpu_stage["error"]
+
+
+def test_gpu_check_exception_stops_pipeline(tmp_path):
+    """若硬體檢查發生未預期拋錯，應攔截為失敗並終止。"""
+    store = _make_store(tmp_path)
+    store.create_job("job1", "job1", "a.mkv")
+
+    run_full_pipeline(
+        "job1", "video.mkv", store,
+        data_output_root=str(tmp_path / "output"),
+        stage_functions=_base_fns(gpu_check=_fail),
+    )
+
+    job = store.get_job_with_stages("job1")
     assert job["status"] == "failed"
     assert job["current_stage"] == "gpu_check"
-    stage_names = [s["stage"] for s in job["stages"]]
-    assert stage_names == ["phase1", "phase2", "gpu_check"]
-    assert "GPU" in job["error"]
 
 
 def test_phase3_systemexit_is_caught_not_crashed(tmp_path):

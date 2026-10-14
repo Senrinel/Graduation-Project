@@ -5,13 +5,10 @@ Phase 3 執行入口：文字辨識 (Step 4 OCR)
 （processed/denoise_on 或 processed/denoise_off + manifest.csv），
 以 EasyOCR 執行文字辨識，輸出標準化 OCRResult 清單（CSV）。
 
-決策紀錄（2026-07-25，使用者明確要求）：Step 4 **強制使用 GPU**，若偵測不到
-可用 GPU 必須終止程式，禁止靜默改用 CPU。
-
-因此本腳本刻意將 GPU 檢查（`ensure_gpu_available()`）放在最開頭執行，
-且延後匯入 `src.ocr.recognizer`（其內部會 import easyocr）到 GPU 檢查
-「通過之後」才進行 —— 這樣一來，在沒有 GPU 的環境下，程式會直接因為
-GPU 檢查失敗而終止，不會先花時間匯入 easyocr / 下載模型才發現沒有 GPU。
+運算調度策略（GPU 優先，CPU 降級相容）：
+- 執行前呼叫 `detect_compute_device()` 偵測可用硬體。
+- 優先使用 NVIDIA GPU (CUDA)；若無可用 GPU 則無縫降級相容使用 CPU。
+- 控制台即時輸出硬體裝置選用狀態。
 
 用法：
     python scripts/run_phase3.py --processed-dir data/output/001/processed/denoise_off
@@ -27,8 +24,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# 刻意先做 GPU 檢查，再匯入任何會拉入 easyocr/torch 的模組。
-from src.ocr.gpu_check import ensure_gpu_available  # noqa: E402
+# 先偵測硬體環境並輸出日誌，再匯入後續重依賴模組。
+from src.ocr.gpu_check import detect_compute_device  # noqa: E402
 
 
 def run(processed_dir: str, out_dir: str) -> Path:
@@ -42,7 +39,6 @@ def run(processed_dir: str, out_dir: str) -> Path:
     Returns:
         ocr_results.csv 的路徑。
     """
-    # 延後匯入：確保 GPU 檢查一定先於 easyocr 的匯入與初始化執行。
     import cv2
 
     from src.ocr.recognizer import get_reader, recognize
@@ -104,13 +100,13 @@ def run(processed_dir: str, out_dir: str) -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Phase 3：文字辨識 (Step 4 OCR，強制使用 GPU)")
+    parser = argparse.ArgumentParser(description="Phase 3：文字辨識 (Step 4 OCR，優先使用 GPU，無則降級 CPU)")
     parser.add_argument("--processed-dir", required=True, help="Phase 2 輸出的前處理影像目錄")
     parser.add_argument("--out-dir", default=None, help="輸出目錄，預設 <processed-dir>/../ocr")
     args = parser.parse_args()
 
-    # 強制 GPU 檢查：沒有可用 GPU 就在這裡終止，不執行任何 OCR 相關邏輯。
-    ensure_gpu_available()
+    # 硬體偵測（優先 GPU，無則降級 CPU，皆輸出標準日誌）
+    detect_compute_device(verbose=True)
 
     out_dir = args.out_dir or str(Path(args.processed_dir).parent.parent / "ocr")
     run(args.processed_dir, out_dir)

@@ -1,27 +1,20 @@
 """
-GPU 偵測與強制檢查 (GPU Detection & Enforcement)
-===================================================
-使用者需求（2026-07-25，明確指示）：Step 4 OCR 必須使用 GPU 執行；
-若偵測不到可用 GPU，程式必須直接終止，**禁止靜默改用 CPU**。
-
-本模組獨立於 recognizer.py，職責單一：
-1. `get_gpu_info()`：透過 torch.cuda API 正確讀取目前可用 GPU 資訊
-   （裝置數量、名稱、顯示記憶體、CUDA capability）。
-2. `ensure_gpu_available()`：作為每次啟動 OCR 前的強制檢查點，
-   檢查失敗時印出清楚錯誤訊息並以 `sys.exit(1)` 終止程式。
-
-刻意將 GPU 檢查獨立成模組（而非寫在 recognizer.py 內部），是為了：
-- 可在 CLI 入口（scripts/run_phase3.py）一開始就先做檢查，
-  避免程式先花時間匯入 easyocr / 讀取影格後才發現沒有 GPU。
-- 可用 monkeypatch 對 torch.cuda 做單元測試，不需要真的有 GPU 硬體
-  也能驗證「偵測不到 GPU 時是否正確終止」的邏輯（見 tests/test_gpu_check.py）。
+硬體運算裝置偵測與相容性管理 (Hardware Compute Device Detection & Management)
+=============================================================================
+運算策略：
+1. 優先偵測並使用 NVIDIA GPU (CUDA) 加速 OCR 深度學習推論。
+2. 若系統無可用 GPU（或環境無 CUDA/torch），自動無縫降級相容使用 CPU 運算。
+3. 不論採用 GPU 或是 CPU 運算，均遵循專案標準於控制台輸出清楚明確之規格日誌。
 """
 
 from __future__ import annotations
 
-import sys
-
-import torch
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    torch = None  # type: ignore
+    _TORCH_AVAILABLE = False
 
 
 def get_gpu_info() -> list[dict]:
@@ -30,9 +23,9 @@ def get_gpu_info() -> list[dict]:
 
     Returns:
         list[dict]: 每個 GPU 一筆，欄位為 index / name / total_memory_gb / capability。
-                    若無可用 GPU，回傳空列表。
+                    若無可用 GPU 或無 torch，回傳空列表。
     """
-    if not torch.cuda.is_available():
+    if not _TORCH_AVAILABLE or not torch.cuda.is_available():
         return []
 
     infos = []
@@ -47,31 +40,52 @@ def get_gpu_info() -> list[dict]:
     return infos
 
 
-def ensure_gpu_available() -> list[dict]:
+def detect_compute_device(verbose: bool = True) -> tuple[bool, str, list[dict]]:
     """
-    強制檢查 GPU 是否可用；不可用時直接終止程式。
+    偵測可用的硬體運算裝置。
 
-    依使用者需求，這裡刻意不提供任何「fallback 用 CPU」的分支——
-    偵測失敗就是 `sys.exit(1)`，不讓程式繼續往下執行。
+    優先檢查 GPU 是否可用；若不可用則自動降級為 CPU。
+    不論使用何種硬體，皆依專案標準格式印出日誌。
+
+    Args:
+        verbose: 是否於標準輸出印出詳細硬體資訊。
 
     Returns:
-        list[dict]: 偵測到的 GPU 資訊列表（保證至少一筆，否則已終止程式）。
+        tuple[bool, str, list[dict]]:
+            - use_gpu (bool): 是否啟用 GPU
+            - device_type (str): "cuda" 或 "cpu"
+            - gpu_info (list[dict]): 偵測到的 GPU 清單（若為 CPU 則為空列表）
     """
     gpu_info = get_gpu_info()
+    use_gpu = len(gpu_info) > 0
 
-    if not gpu_info:
-        print("=" * 60)
-        print("[錯誤] 未偵測到可用的 GPU（torch.cuda.is_available() == False）。")
-        print("本專案要求 Step 4 OCR 必須使用 GPU 執行，禁止靜默改用 CPU，程式終止。")
-        print("請確認：")
-        print("  1) 已安裝 NVIDIA GPU 並安裝對應驅動")
-        print("  2) 已安裝支援 CUDA 的 torch 版本（而非 CPU-only 版本）")
-        print("  3) CUDA_VISIBLE_DEVICES 環境變數未被設為空值或錯誤裝置編號")
-        print("=" * 60)
-        sys.exit(1)
+    if use_gpu:
+        device_type = "cuda"
+        if verbose:
+            print("=" * 60)
+            print(f"[硬體運算裝置] 偵測到 {len(gpu_info)} 張可用 GPU，優先啟用 GPU 加速運算：")
+            for info in gpu_info:
+                print(
+                    f"  - GPU {info['index']}: {info['name']}，"
+                    f"顯示記憶體 {info['total_memory_gb']} GB，CUDA capability {info['capability']}"
+                )
+            print("=" * 60)
+    else:
+        device_type = "cpu"
+        if verbose:
+            print("=" * 60)
+            print("[硬體運算裝置] 未偵測到可用 GPU（torch.cuda.is_available() == False）。")
+            print("系統自動降級相容：改用 CPU 進行運算（注意：逐影格 OCR 辨識耗時可能較長）。")
+            print("提示：若希望獲得極速體驗，請確認 NVIDIA 驅動及支援 CUDA 的 PyTorch 安裝。")
+            print("=" * 60)
 
-    print(f"[GPU 檢查通過] 偵測到 {len(gpu_info)} 張可用 GPU：")
-    for info in gpu_info:
-        print(f"  - GPU {info['index']}: {info['name']}，"
-              f"顯示記憶體 {info['total_memory_gb']} GB，CUDA capability {info['capability']}")
+    return use_gpu, device_type, gpu_info
+
+
+def ensure_gpu_available() -> list[dict]:
+    """
+    向後相容函式：偵測硬體裝置並輸出日誌，回傳 GPU 資訊列表。
+    （改為降級相容機制，無 GPU 時降級 CPU 運算而不強制終止程式）
+    """
+    _, _, gpu_info = detect_compute_device(verbose=True)
     return gpu_info

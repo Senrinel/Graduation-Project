@@ -1,2 +1,0 @@
-channel,video_id,run_timestamp,total_time_sec,word_count_total,dict_hit_count,dict_hit_rate,llm_call_count,llm_fallback_success_count,llm_fallback_fail_count,error_count,module_time_load,module_time_clean,module_time_dedup,module_time_tokenizer_init,module_time_tokenize,module_time_dict_lookup,module_time_write_output
-channel1_okt,c2b22ccc1c7541d9b5e37927eea736ed,2026-08-29T12:51:16,6.018329858779907,740,539,0.7283783783783784,0,0,0,0,0.08395147323608398,0.010608911514282227,0.0009186267852783203,0.0016789436340332031,0.15776968002319336,5.700583219528198,0.04193258285522461
