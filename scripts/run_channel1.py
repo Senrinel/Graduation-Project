@@ -74,8 +74,11 @@ def run(video_id: str, engine: str, ocr_results_path: str, out_dir: str, dict_db
         tokenizer = get_tokenizer(engine)
 
     export_records: List[ExportRecord] = []
+    total_sub = len(subtitles)
     with DictionaryIndex(dict_db) as dictionary:
-        for subtitle in subtitles:
+        for s_idx, subtitle in enumerate(subtitles, 1):
+            if total_sub <= 10 or s_idx % max(1, total_sub // 5) == 0 or s_idx == total_sub:
+                print(f"[Channel 1 / {engine} 進度] 斷詞與字典查詢: 字幕 {s_idx}/{total_sub}...", flush=True)
             with builder.time_module("tokenize"):
                 tokens = tokenizer.tokenize(subtitle.text)
 

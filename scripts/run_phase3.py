@@ -65,22 +65,28 @@ def run(processed_dir: str, out_dir: str) -> Path:
     t_loop_start = time.time()
     n_frames = 0
     with open(manifest_in, encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            image = cv2.imread(str(in_path / row["filename"]), cv2.IMREAD_UNCHANGED)
-            if image is None:
-                print(f"[警告] 無法讀取影像: {row['filename']}，已略過")
-                continue
+        rows = list(csv.DictReader(f))
+    total_frames = len(rows)
 
-            pframe = PreprocessedFrame(
-                frame_id=int(row["frame_id"]),
-                timestamp_sec=float(row["timestamp_sec"]),
-                roi_image=image,
-            )
-            results = recognize(pframe)
-            for r in results:
-                all_rows.append(r.model_dump())
-            n_frames += 1
+    for idx, row in enumerate(rows, 1):
+        image = cv2.imread(str(in_path / row["filename"]), cv2.IMREAD_UNCHANGED)
+        if image is None:
+            print(f"[警告] 無法讀取影像: {row['filename']}，已略過", flush=True)
+            continue
+
+        pframe = PreprocessedFrame(
+            frame_id=int(row["frame_id"]),
+            timestamp_sec=float(row["timestamp_sec"]),
+            roi_image=image,
+        )
+        print(
+            f"[Step 4 進度] EasyOCR 辨識中: 影格 {idx}/{total_frames} (時間戳: {pframe.timestamp_sec:.1f}s)...",
+            flush=True,
+        )
+        results = recognize(pframe)
+        for r in results:
+            all_rows.append(r.model_dump())
+        n_frames += 1
     t_loop = time.time() - t_loop_start
     t_total = t_init + t_loop
 

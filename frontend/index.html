@@ -6,7 +6,10 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <h1>OCR 字幕學習系統</h1>
+  <header class="app-header">
+    <h1>OCR 字幕學習系統</h1>
+    <button id="system-shutdown-btn" class="btn-shutdown" type="button" title="關閉後端伺服器並結束程序">關閉系統</button>
+  </header>
 
   <!--
     Phase 7：測試期間方便操作的功能區域（使用者決策紀錄，2026-07-26，見
@@ -89,8 +92,21 @@
     <div class="upload-row">
       <input type="file" id="video-file" accept=".mkv,.mp4,.mov,.avi" />
       <button id="start-btn" type="button">開始</button>
+      <button id="cancel-btn" type="button" class="btn-danger" style="display:none;">中斷運算</button>
     </div>
     <p id="job-status-line"></p>
+
+    <!-- 即時執行日誌控制台（正式保留功能） -->
+    <div class="log-section">
+      <div class="log-header">
+        <h3>執行日誌（即時）</h3>
+        <div class="log-actions">
+          <label><input type="checkbox" id="autoscroll-toggle" checked /> 自動捲動</label>
+          <button id="clear-logs-btn" type="button" class="btn-small">清空</button>
+        </div>
+      </div>
+      <pre id="realtime-log-box" class="log-box">尚未開始處理影片...</pre>
+    </div>
 
     <div id="results-controls" hidden>
       <label>顯示通道：

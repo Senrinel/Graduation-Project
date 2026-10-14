@@ -56,7 +56,8 @@ def run(video_path: str, out_dir: str, sample_rate: float, max_frames: int | Non
 
     manifest_rows = []
     count = 0
-    print(f"[Step 2] 依採樣率 {sample_rate} FPS 擷取影格...")
+    estimated_total = max_frames if max_frames is not None else max(1, int(meta.duration_sec * sample_rate))
+    print(f"[Step 2] 依採樣率 {sample_rate} FPS 擷取影格 (預估 ~{estimated_total} 張)...", flush=True)
     for frame in sample_frames(cap, meta.fps, sample_rate=sample_rate):
         filename = f"frame_{frame.frame_id:06d}.jpg"
         cv2.imwrite(str(out_path / filename), frame.image)
@@ -66,6 +67,10 @@ def run(video_path: str, out_dir: str, sample_rate: float, max_frames: int | Non
             "filename": filename,
         })
         count += 1
+        print(
+            f"[Step 2 進度] 已擷取第 {count} 張影格 (時間戳: {frame.timestamp_sec:.1f}s / {meta.duration_sec:.1f}s)",
+            flush=True,
+        )
         if max_frames is not None and count >= max_frames:
             break
 

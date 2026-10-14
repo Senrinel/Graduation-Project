@@ -346,3 +346,50 @@ def test_environment_route_accepts_query_overrides(api_env, monkeypatch):
     assert resp.status_code == 200
     assert captured["dict_db_path"] == "/custom/dict.sqlite3"
     assert captured["ollama_base_url"] == "http://custom:1234"
+
+
+def test_get_job_logs_returns_logs_and_supports_after_id(api_env):
+    resp = _upload(api_env)
+    job_id = resp.json()["job_id"]
+    job_store = api_env["app"].state.job_store
+
+    job_store.record_log(job_id, "Log 1: pipeline started")
+    job_store.record_log(job_id, "Log 2: frame sampled")
+
+    logs_resp = api_env["client"].get(f"/api/jobs/{job_id}/logs")
+    assert logs_resp.status_code == 200
+    data = logs_resp.json()
+    assert data["job_id"] == job_id
+    assert len(data["logs"]) == 2
+    assert data["logs"][0]["message"] == "Log 1: pipeline started"
+
+    first_id = data["logs"][0]["id"]
+    incr_resp = api_env["client"].get(f"/api/jobs/{job_id}/logs?after_id={first_id}")
+    assert incr_resp.status_code == 200
+    assert len(incr_resp.json()["logs"]) == 1
+    assert incr_resp.json()["logs"][0]["message"] == "Log 2: frame sampled"
+
+
+def test_cancel_job_route_sets_cancelled_status(api_env):
+    resp = _upload(api_env)
+    job_id = resp.json()["job_id"]
+
+    cancel_resp = api_env["client"].post(f"/api/jobs/{job_id}/cancel")
+    assert cancel_resp.status_code == 200
+    assert cancel_resp.json()["status"] == "cancelling"
+
+    status_resp = api_env["client"].get(f"/api/jobs/{job_id}/status")
+    assert status_resp.status_code == 200
+    assert status_resp.json()["status"] == "cancelled"
+
+
+def test_system_shutdown_endpoint(api_env, monkeypatch):
+    # 避免真實測試中殺死 pytest 行程
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr("os._exit", lambda code: None)
+    monkeypatch.setattr("os.kill", lambda pid, sig: None)
+
+    resp = api_env["client"].post("/api/system/shutdown")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "shutting_down"
+
