@@ -46,5 +46,6 @@ data/pytest_temp/*
 
 # Large SQLite Indexes (Auto-generated from XML dictionaries, >200MB)
 data/dictionary_index.sqlite3
+data/jobs.sqlite3
 *.sqlite3-journal
 *.sqlite3-wal

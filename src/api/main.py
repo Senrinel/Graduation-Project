@@ -98,6 +98,16 @@ def create_app(
         CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def add_no_cache_header(request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.endswith((".js", ".css", ".html")):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
     app.state.job_store = JobStore(job_db_path)
     app.state.data_output_root = data_output_root
     app.state.upload_dir = upload_dir

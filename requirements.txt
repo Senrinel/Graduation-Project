@@ -11,7 +11,10 @@ easyocr>=1.7          # 內含 torch，安裝體積大（約 2-3GB），需預�
 konlpy>=0.6           # Okt/Komoran/Kkma/Hannanum 皆包含在內，需先安裝 JDK 11+ 並設定 JAVA_HOME
 JPype1>=1.4           # konlpy 的 Java 橋接依賴；沙盒環境已驗證 Okt/Komoran/Kkma 三引擎可正常運作
                       # （Hannanum 在 JDK 17/21 下有已知相容性問題，見 check_konlpy_engines.py 說明）
-# python-mecab-ko 官方二進位 wheel 僅支援 Python <= 3.12；在 Python 3.13+ 或無 C++ mecab.h 編譯環境下自動略過，系統優先使用最佳推薦引擎 Komoran
+# Mecab-ko 韓文斷詞（跨版本跨平台預編譯 wheel，相容 Python 3.8 ~ 3.14+）
+mecab-python3>=1.0.10
+mecab-ko-dic>=1.0.0
+# 舊版 python-mecab-ko 僅支援 Python <= 3.12，保留向下相容標記
 python-mecab-ko>=1.3.7; python_version < "3.13"
 
 # ---- LLM（Phase 5 Channel 2/3，本地執行，見 PHASE5_MULTI_CHANNEL_PLAN.md）----

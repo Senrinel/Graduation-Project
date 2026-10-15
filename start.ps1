@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     韓文學習字幕擷取專案 - 一鍵快速啟動腳本 (Windows PowerShell)
 .DESCRIPTION
@@ -54,9 +54,5 @@ Write-Host "服務網址: $url" -ForegroundColor Green
 Write-Host "提示: 按 Ctrl + C 可隨時中斷並關閉服務" -ForegroundColor DarkGray
 Write-Host "============================================================`n" -ForegroundColor Cyan
 
-# 於背景稍微延遲啟動預設瀏覽器（雙重保證彈出頁面）
-$browserCmd = "Start-Sleep -Seconds 1; Start-Process '$url'"
-Start-Process "powershell.exe" -ArgumentList "-NoProfile", "-WindowStyle", "Hidden", "-Command", $browserCmd
-
-# 啟動 Uvicorn 伺服器
+# 啟動 Uvicorn 伺服器（伺服器啟動完成後會自動透過 Python webbrowser 開啟瀏覽器操作介面）
 & $venvPython -m uvicorn src.api.main:app --host $HostIP --port $Port

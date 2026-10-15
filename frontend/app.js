@@ -19,6 +19,7 @@ const API_BASE = ""; // 與後端同源（由 FastAPI 掛載靜態檔案提供�
 let currentJobId = null;
 let pollTimer = null;
 let lastAvailableChannels = [];
+let lastLogId = 0;
 
 const MAX_DISPLAY_ROWS = 200; // 結果筆數可能高達上萬筆，畫面只顯示前 N 筆，完整資料請用匯出功能
 
@@ -128,7 +129,7 @@ async function startJob() {
   lastAvailableChannels = [];
   lastLogId = 0;
   const logBox = document.getElementById("realtime-log-box");
-  if (logBox) logBox.textContent = "[系統] 正在上傳影片檔案並初始化背景管線...\n";
+  if (logBox) logBox.textContent = "[系統] 正在讀取並上傳影片檔案至伺服器...\n";
 
   try {
     const resp = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: form });
@@ -136,11 +137,14 @@ async function startJob() {
     if (!resp.ok) throw new Error(body.detail || `HTTP ${resp.status}`);
 
     currentJobId = body.job_id;
+    try { sessionStorage.setItem("currentJobId", currentJobId); } catch (_) {}
     document.getElementById("job-status-line").textContent =
       `工作已建立：${currentJobId}（狀態：${body.status}）`;
+    appendLogMessage(`[系統] 伺服器已建立任務 ${currentJobId}，啟動背景管線處理...`);
     startPolling();
   } catch (e) {
     document.getElementById("job-status-line").textContent = `上傳失敗：${e.message}`;
+    appendLogMessage(`[錯誤] 影片上傳失敗：${e.message}`);
     startBtn.disabled = false;
     cancelBtn.style.display = "none";
   }
@@ -155,7 +159,7 @@ function startPolling() {
 function appendLogMessage(msg) {
   const box = document.getElementById("realtime-log-box");
   if (!box) return;
-  if (box.textContent.trim() === "尚未開始處理影片...") {
+  if (box.textContent.trim() === "尚未開始處理影片..." || box.textContent.includes("尚未開始處理影片...")) {
     box.textContent = "";
   }
   box.textContent += (box.textContent ? "\n" : "") + msg;
@@ -362,3 +366,16 @@ document.getElementById("channel-select").addEventListener("change", loadResults
 document.getElementById("export-btn").addEventListener("click", exportResults);
 
 toggleChannel1Engines();
+
+// 自動復原進行中或最近一次工作
+try {
+  const savedJobId = sessionStorage.getItem("currentJobId");
+  if (savedJobId) {
+    currentJobId = savedJobId;
+    const logBox = document.getElementById("realtime-log-box");
+    if (logBox && (logBox.textContent.trim() === "尚未開始處理影片..." || !logBox.textContent.trim())) {
+      logBox.textContent = `[系統] 載入既有工作 ${currentJobId}，正在同步最新狀態與日誌...\n`;
+    }
+    startPolling();
+  }
+} catch (_) {}

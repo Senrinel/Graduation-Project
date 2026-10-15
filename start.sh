@@ -19,11 +19,6 @@ echo "🚀 正在啟動 韓文學習字幕擷取系統 (FastAPI + Web UI)"
 echo "服務網址: $URL"
 echo "============================================================"
 
-# 若環境支援 xdg-open 則自動開啟瀏覽器
-if command -v xdg-open >/dev/null 2>&1; then
-    (sleep 2 && xdg-open "$URL") &
-elif command -v open >/dev/null 2>&1; then
-    (sleep 2 && open "$URL") &
-fi
+# 啟動 Uvicorn 伺服器（伺服器啟動完成後會自動透過 Python webbrowser 開啟瀏覽器操作介面）
 
 python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000
