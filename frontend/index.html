@@ -35,7 +35,12 @@
           <input type="number" id="param-max-frames" min="1" />
         </label>
         <label>LLM 模型名稱（留空＝預設）
-          <input type="text" id="param-model" placeholder="qwen2.5:7b" />
+          <input type="text" id="param-model" list="model-suggestions" placeholder="qwen2.5:7b (或 qwen2.5:1.5b 輕量版)" />
+          <datalist id="model-suggestions">
+            <option value="qwen2.5:1.5b">qwen2.5:1.5b（輕量快速，推薦硬體資源緊湊時使用）</option>
+            <option value="qwen2.5:7b">qwen2.5:7b（標準推薦，辨識修正語意理解最高）</option>
+            <option value="qwen2.5:3b">qwen2.5:3b（折衷平衡版）</option>
+          </datalist>
         </label>
         <label>Ollama 位址（留空＝預設）
           <input type="text" id="param-base-url" placeholder="http://localhost:11434" />

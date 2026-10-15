@@ -40,7 +40,8 @@ desktop.ini
 # Pipeline Runtime Data
 data/input/*
 data/output/*
-data/pytest_temp/*
+data/pytest_temp/
+data/test_tmp/
 !data/input/.gitkeep
 !data/output/.gitkeep
 

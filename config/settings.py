@@ -91,6 +91,19 @@ API_CONFIG = {
     ],
     "default_results_channel": "channel3",
     "denoise_mode": "on",  # 上傳影片跑完整流程時使用哪一種前處理版本；denoise 最終決策仍延後到專案尾聲
-    "llm_model": "qwen2.5:7b",
-    "llm_base_url": "http://localhost:11434",
+    "llm_model": os.environ.get("LLM_MODEL", "qwen2.5:7b"),
+    "llm_base_url": os.environ.get("LLM_BASE_URL", "http://localhost:11434"),
+    "llm_timeout_sec": float(os.environ.get("LLM_TIMEOUT_SEC", "90.0")),
+}
+
+LLM_CONFIG = {
+    "default_model": API_CONFIG["llm_model"],
+    "lightweight_model": "qwen2.5:1.5b",
+    "base_url": API_CONFIG["llm_base_url"],
+    "timeout_sec": API_CONFIG["llm_timeout_sec"],
+    "warmup_timeout_sec": 120.0,
+    "keep_alive": os.environ.get("LLM_KEEP_ALIVE", "30m"),
+    "temperature": 0.1,
+    "max_retries": 2,
+    "num_ctx": 1024,
 }

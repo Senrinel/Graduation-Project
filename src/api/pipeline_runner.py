@@ -437,6 +437,17 @@ def _run_full_pipeline_impl(
             job_store.update_job(job_id, status="failed", current_stage="phase3", error=err)
             return
 
+        # ---- 清理 PyTorch 顯存快取，為後續 LLM 釋放完整 VRAM 資源 ----
+        try:
+            import gc
+            import torch
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                print("[顯存調度] Phase 3 OCR 完成，已釋放 PyTorch 顯示記憶體快取 (CUDA empty cache)，確保後續 LLM 具備充裕 VRAM。", flush=True)
+        except Exception:
+            pass
+
         _check_cancelled()
         # ---- Channel 1：子引擎彼此獨立，個別失敗不影響其他子通道（Phase 7：可整體關閉／選子引擎）----
         if include_channel1:

@@ -35,7 +35,7 @@ from src.nlp.text_cleaner import clean_ocr_text  # noqa: E402
 from src.nlp.tokenizer import get_tokenizer  # noqa: E402
 from src.nlp.dictionary import DictionaryIndex  # noqa: E402
 from src.nlp.llm_client import OllamaClient  # noqa: E402
-from src.nlp.llm_fallback import guess_word  # noqa: E402
+from src.nlp.llm_fallback import guess_word, clear_fallback_cache  # noqa: E402
 from src.nlp.stats import RunReportBuilder  # noqa: E402
 from src.export.csv_exporter import export_csv  # noqa: E402
 from src.ocr.results_io import load_ocr_results  # noqa: E402
@@ -90,11 +90,22 @@ def run(
             print(f"  [提示] 引擎 {ENGINE_NAME} 不可用（{e}），Channel 3 自動平穩切換至最佳推薦引擎 Komoran...")
             tokenizer = get_tokenizer("komoran")
 
-    client = llm_client if llm_client is not None else OllamaClient(model=model, base_url=base_url)
+    clear_fallback_cache()
+    client = llm_client if llm_client is not None else OllamaClient(model=model, base_url=base_url, default_num_predict=50)
+    if hasattr(client, "warmup"):
+        print(f"  正在預熱並確認 LLM 模型 ({model}) 載入狀態...", flush=True)
+        w_ok = client.warmup()
+        if w_ok:
+            print(f"  [就緒] LLM 模型 ({model}) 已載入至記憶體/VRAM。", flush=True)
+        else:
+            print(f"  [提示] LLM 預熱略過或服務未響應，將於 fallback 觸發時自動嘗試連線。", flush=True)
 
     export_records: List[ExportRecord] = []
+    total_subs = len(subtitles)
     with DictionaryIndex(dict_db) as dictionary:
-        for subtitle in subtitles:
+        for s_idx, subtitle in enumerate(subtitles, 1):
+            if total_subs <= 20 or s_idx % max(1, total_subs // 5) == 0 or s_idx == 1 or s_idx == total_subs:
+                print(f"  [Channel 3 進度] 處理字幕 {s_idx}/{total_subs}: {subtitle.text[:20]}...", flush=True)
             with builder.time_module("tokenize"):
                 tokens = tokenizer.tokenize(subtitle.text)
 
