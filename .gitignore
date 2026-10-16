@@ -22,12 +22,15 @@ env/
 *.swp
 *.swo
 
-# OS specific files
+# OS & Office specific files
 Thumbs.db
 desktop.ini
 .DS_Store
+~$*.pptx
+~$*.docx
+~$*.xlsx
 
-# Large Media Files (Local test videos)
+# Large Media Files (Local test videos & images)
 *.mkv
 *.mp4
 *.avi
@@ -37,10 +40,12 @@ desktop.ini
 *.png
 *.apkg
 
-# Pipeline Runtime Data
+# Pipeline Runtime & Upload Data
 data/input/*
 data/output/*
+data/uploads/*
 data/pytest_temp/
+data/pytest_tmp/
 data/test_tmp/
 !data/input/.gitkeep
 !data/output/.gitkeep
@@ -50,3 +55,7 @@ data/dictionary_index.sqlite3
 data/jobs.sqlite3
 *.sqlite3-journal
 *.sqlite3-wal
+
+# Large PDF Papers & Reference Documents
+參考論文/
+*.pdf

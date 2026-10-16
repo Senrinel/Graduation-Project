@@ -50,7 +50,9 @@ def add_academic_card(slide, left, top, width, height, title, items, bg_hex='F1F
     return shape
 
 def update_presentation():
-    prs = pptx.Presentation('報告/專題報告.pptx')
+    import os
+    target_path = 'presentation/專題報告.pptx' if os.path.exists('presentation/專題報告.pptx') else '報告/專題報告.pptx'
+    prs = pptx.Presentation(target_path)
     print(f'Original slide count: {len(prs.slides)}')
     
     # -------------------------------------------------------------
@@ -351,8 +353,8 @@ def update_presentation():
     print('Slide 20 (References) created successfully.')
 
     # Save to the target PPTX file
-    prs.save('報告/專題報告.pptx')
-    print('Successfully saved updated presentation to 報告/專題報告.pptx! Total slides now:', len(prs.slides))
+    prs.save(target_path)
+    print(f'Successfully saved updated presentation to {target_path}! Total slides now:', len(prs.slides))
 
 if __name__ == '__main__':
     update_presentation()
