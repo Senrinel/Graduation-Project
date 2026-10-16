@@ -47,28 +47,34 @@ def _process_one_pass(frames_dir: Path, out_dir: Path, roi: dict | None, denoise
 
     manifest_rows = []
     t0 = time.time()
+    tag = "去雜訊 (denoise on)" if denoise else "不去雜訊 (denoise off)"
     with open(manifest_in, encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            image = cv2.imread(str(frames_dir / row["filename"]))
-            if image is None:
-                print(f"[警告] 無法讀取影格: {row['filename']}，已略過")
-                continue
+        rows = list(csv.DictReader(f))
+    total_rows = len(rows)
 
-            frame = Frame(
-                frame_id=int(row["frame_id"]),
-                timestamp_sec=float(row["timestamp_sec"]),
-                image=image,
-            )
-            pframe = preprocess(frame, roi=roi, denoise=denoise)
+    for idx, row in enumerate(rows, 1):
+        image = cv2.imread(str(frames_dir / row["filename"]))
+        if image is None:
+            print(f"[警告] 無法讀取影格: {row['filename']}，已略過", flush=True)
+            continue
 
-            filename = f"processed_{pframe.frame_id:06d}.jpg"
-            cv2.imwrite(str(out_dir / filename), pframe.roi_image)
-            manifest_rows.append({
-                "frame_id": pframe.frame_id,
-                "timestamp_sec": round(pframe.timestamp_sec, 3),
-                "filename": filename,
-            })
+        frame = Frame(
+            frame_id=int(row["frame_id"]),
+            timestamp_sec=float(row["timestamp_sec"]),
+            image=image,
+        )
+        pframe = preprocess(frame, roi=roi, denoise=denoise)
+
+        filename = f"processed_{pframe.frame_id:06d}.jpg"
+        cv2.imwrite(str(out_dir / filename), pframe.roi_image)
+        manifest_rows.append({
+            "frame_id": pframe.frame_id,
+            "timestamp_sec": round(pframe.timestamp_sec, 3),
+            "filename": filename,
+        })
+        if total_rows <= 20 or idx % max(1, total_rows // 10) == 0 or idx == total_rows:
+            print(f"[Step 3 進度] 前處理影像 ({tag}): {idx}/{total_rows} 張 ({(idx/total_rows)*100:.0f}%)", flush=True)
+
     elapsed = time.time() - t0
 
     manifest_out = out_dir / "manifest.csv"

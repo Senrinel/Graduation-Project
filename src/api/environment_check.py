@@ -56,7 +56,11 @@ def check_gpu() -> dict:
 
     try:
         if not torch.cuda.is_available():
-            return _item("GPU / CUDA", False, "torch 已安裝，但 torch.cuda.is_available() 回傳 False")
+            from src.ocr.gpu_check import check_nvidia_hardware
+            has_hw, hw_name = check_nvidia_hardware()
+            if has_hw:
+                return _item("GPU / CUDA", False, f"偵測到實體顯卡 ({hw_name})，但 PyTorch 缺少 CUDA 支援（為 CPU 版）。請執行 deploy.ps1 自動修復。")
+            return _item("GPU / CUDA", True, "未偵測到獨立顯卡，系統平穩降級為 CPU 相容運算模式")
         names = [torch.cuda.get_device_properties(i).name for i in range(torch.cuda.device_count())]
         return _item("GPU / CUDA", True, f"{len(names)} 張可用：{', '.join(names)}")
     except Exception as e:  # noqa: BLE001

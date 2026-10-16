@@ -7,8 +7,17 @@ body {
   line-height: 1.5;
 }
 
-h1 {
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 2px solid #e0e0e0;
+  padding-bottom: 0.75rem;
   margin-bottom: 1.5rem;
+}
+
+.app-header h1 {
+  margin: 0;
 }
 
 h2 {
@@ -191,3 +200,96 @@ button:disabled {
   font-size: 0.8rem;
   color: #666;
 }
+
+.btn-shutdown {
+  background: #fff5f5;
+  color: #b3261e;
+  border: 1px solid #eb8c87;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.btn-shutdown:hover:not(:disabled) {
+  background: #b3261e;
+  color: #fff;
+}
+
+.btn-danger {
+  background: #b3261e;
+  color: #fff;
+  border: 1px solid #8e1f18;
+  font-weight: 500;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #901f18;
+}
+
+.btn-small {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.log-section {
+  margin: 1.5rem 0;
+  background: #181818;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  border: 1px solid #333;
+}
+
+.log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #282828;
+  padding: 0.4rem 1rem;
+  border-bottom: 1px solid #383838;
+}
+
+.log-header h3 {
+  margin: 0;
+  color: #eaeaea;
+  font-size: 0.9rem;
+}
+
+.log-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+}
+
+.log-actions label {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: #ccc;
+}
+
+.log-box {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  height: 220px;
+  max-height: 350px;
+  overflow-y: auto;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #4af626;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #181818;
+}
+
+.log-box::-webkit-scrollbar {
+  width: 8px;
+}
+
+.log-box::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 4px;
+}
+

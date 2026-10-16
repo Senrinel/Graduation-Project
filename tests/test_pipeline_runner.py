@@ -122,7 +122,8 @@ def test_phase1_failure_stops_everything(tmp_path):
     assert [s["stage"] for s in job["stages"]] == ["phase1"]
 
 
-def test_gpu_unavailable_stops_before_phase3(tmp_path):
+def test_gpu_unavailable_falls_back_to_cpu_and_continues(tmp_path):
+    """未偵測到 GPU 時自動降級使用 CPU 運算，管線不應中斷，應順利完成後續階段。"""
     store = _make_store(tmp_path)
     store.create_job("job1", "job1", "a.mkv")
 
@@ -133,11 +134,26 @@ def test_gpu_unavailable_stops_before_phase3(tmp_path):
     )
 
     job = store.get_job_with_stages("job1")
+    assert job["status"] == "done"
+    gpu_stage = next(s for s in job["stages"] if s["stage"] == "gpu_check")
+    assert gpu_stage["ok"] == 1
+    assert "CPU" in gpu_stage["error"]
+
+
+def test_gpu_check_exception_stops_pipeline(tmp_path):
+    """若硬體檢查發生未預期拋錯，應攔截為失敗並終止。"""
+    store = _make_store(tmp_path)
+    store.create_job("job1", "job1", "a.mkv")
+
+    run_full_pipeline(
+        "job1", "video.mkv", store,
+        data_output_root=str(tmp_path / "output"),
+        stage_functions=_base_fns(gpu_check=_fail),
+    )
+
+    job = store.get_job_with_stages("job1")
     assert job["status"] == "failed"
     assert job["current_stage"] == "gpu_check"
-    stage_names = [s["stage"] for s in job["stages"]]
-    assert stage_names == ["phase1", "phase2", "gpu_check"]
-    assert "GPU" in job["error"]
 
 
 def test_phase3_systemexit_is_caught_not_crashed(tmp_path):
@@ -444,3 +460,42 @@ def test_video_id_defaults_to_job_id(tmp_path):
     )
 
     assert all(v == "my-job-42" for v in received_video_ids)
+
+
+def test_pipeline_stdout_captured_into_job_logs(tmp_path):
+    store = _make_store(tmp_path)
+    store.create_job("job_tee_test", "job_tee_test", "a.mkv")
+
+    def print_stage(*args, **kwargs):
+        print("[自訂階段] 正在執行測試輸出內容")
+
+    run_full_pipeline(
+        "job_tee_test", "video.mkv", store, include_channel2=False,
+        data_output_root=str(tmp_path / "output"),
+        stage_functions=_base_fns(phase1=_ok_phase1_with_one_frame, phase2=print_stage),
+    )
+
+    logs = store.list_logs("job_tee_test")
+    messages = [m["message"] for m in logs]
+    assert any("[自訂階段] 正在執行測試輸出內容" in m for m in messages)
+
+
+def test_pipeline_cancellation_aborts_execution(tmp_path):
+    from src.api.pipeline_runner import request_job_cancellation
+
+    store = _make_store(tmp_path)
+    store.create_job("job_cancel_exec", "job_cancel_exec", "a.mkv")
+
+    def cancel_during_phase2(*args, **kwargs):
+        request_job_cancellation("job_cancel_exec")
+
+    run_full_pipeline(
+        "job_cancel_exec", "video.mkv", store, include_channel2=False,
+        data_output_root=str(tmp_path / "output"),
+        stage_functions=_base_fns(phase1=_ok_phase1_with_one_frame, phase2=cancel_during_phase2),
+    )
+
+    job = store.get_job("job_cancel_exec")
+    assert job["status"] == "cancelled"
+    assert "中斷" in (job["error"] or "")
+

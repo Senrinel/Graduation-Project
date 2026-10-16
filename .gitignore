@@ -1,13 +1,61 @@
+# Python bytecode & cache
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual Environments
 .venv/
 venv/
-data/input/*
-data/output/*
-!data/input/.gitkeep
-!data/output/.gitkeep
+ENV/
+env/
+
+# Environment Variables & Secrets
 .env
-*.apkg
+.env.local
+
+# IDE & Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS & Office specific files
+Thumbs.db
+desktop.ini
+.DS_Store
+~$*.pptx
+~$*.docx
+~$*.xlsx
+
+# Large Media Files (Local test videos & images)
 *.mkv
 *.mp4
+*.avi
+*.mov
 *.jpg
+*.jpeg
+*.png
+*.apkg
+
+# Pipeline Runtime & Upload Data
+data/input/*
+data/output/*
+data/uploads/*
+data/pytest_temp/
+data/pytest_tmp/
+data/test_tmp/
+!data/input/.gitkeep
+!data/output/.gitkeep
+
+# Large SQLite Indexes (Auto-generated from XML dictionaries, >200MB)
+data/dictionary_index.sqlite3
+data/jobs.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+
+# Large PDF Papers & Reference Documents
+參考論文/
+*.pdf

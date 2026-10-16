@@ -31,11 +31,15 @@ def sample_frames(cap: cv2.VideoCapture, source_fps: float, sample_rate: float =
     src_index = 0
 
     while True:
-        ok, image = cap.read()
-        if not ok:
-            break
         if src_index % step == 0:
+            ok, image = cap.read()
+            if not ok:
+                break
             timestamp_sec = src_index / source_fps
             yield Frame(frame_id=frame_id, timestamp_sec=timestamp_sec, image=image)
             frame_id += 1
+        else:
+            ok = cap.grab()
+            if not ok:
+                break
         src_index += 1

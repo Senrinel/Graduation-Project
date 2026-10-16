@@ -11,8 +11,11 @@ easyocr>=1.7          # 內含 torch，安裝體積大（約 2-3GB），需預�
 konlpy>=0.6           # Okt/Komoran/Kkma/Hannanum 皆包含在內，需先安裝 JDK 11+ 並設定 JAVA_HOME
 JPype1>=1.4           # konlpy 的 Java 橋接依賴；沙盒環境已驗證 Okt/Komoran/Kkma 三引擎可正常運作
                       # （Hannanum 在 JDK 17/21 下有已知相容性問題，見 check_konlpy_engines.py 說明）
-python-mecab-ko>=1.3.7  # Mecab-ko 綁定，純 pip 安裝、自帶編譯好的字典，不需系統編譯
-                        # （已於沙盒與使用者本機皆驗證安裝成功；優先於 konlpy.tag.Mecab 使用）
+# Mecab-ko 韓文斷詞（跨版本跨平台預編譯 wheel，相容 Python 3.8 ~ 3.14+）
+mecab-python3>=1.0.10
+mecab-ko-dic>=1.0.0
+# 舊版 python-mecab-ko 僅支援 Python <= 3.12，保留向下相容標記
+python-mecab-ko>=1.3.7; python_version < "3.13"
 
 # ---- LLM（Phase 5 Channel 2/3，本地執行，見 PHASE5_MULTI_CHANNEL_PLAN.md）----
 # Ollama 執行環境本身不透過 pip 安裝（含模型下載），步驟見 LOCAL_TESTING.md；

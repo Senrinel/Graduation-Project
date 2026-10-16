@@ -53,8 +53,18 @@ CREATE TABLE IF NOT EXISTS job_stages (
 );
 """
 
+_LOGS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS job_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    message TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_logs_job_id_id ON job_logs (job_id, id);
+"""
+
 # 工作狀態允許的值，供路由層驗證/文件參考用。
-JOB_STATUSES = ("queued", "running", "done", "failed")
+JOB_STATUSES = ("queued", "running", "done", "failed", "cancelled")
 
 
 class JobStore:
@@ -74,6 +84,7 @@ class JobStore:
         with self._connect() as conn:
             conn.execute(_JOBS_SCHEMA)
             conn.execute(_STAGES_SCHEMA)
+            conn.executescript(_LOGS_SCHEMA)
 
     @staticmethod
     def _now() -> str:
@@ -144,3 +155,27 @@ class JobStore:
             return None
         job["stages"] = self.list_stages(job_id)
         return job
+
+    def record_log(self, job_id: str, message: str) -> None:
+        """寫入一筆即時執行日誌。"""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO job_logs (job_id, message, recorded_at) VALUES (?, ?, ?)",
+                (job_id, message, self._now()),
+            )
+
+    def list_logs(self, job_id: str, after_id: int = 0, limit: int = 300) -> list[dict]:
+        """讀取指定工作大於 after_id 的日誌清單，支援增量輪詢。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, message, recorded_at FROM job_logs "
+                "WHERE job_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
+                (job_id, after_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def clear_logs(self, job_id: str) -> None:
+        """清空指定工作的日誌。"""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM job_logs WHERE job_id = ?", (job_id,))
+

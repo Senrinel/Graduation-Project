@@ -53,9 +53,22 @@ def _extract_json_text(raw_response: str) -> str:
     return match.group(1) if match else raw_response
 
 
+_FALLBACK_CACHE: dict[str, Optional[str]] = {}
+
+
+def clear_fallback_cache() -> None:
+    """清空 fallback 推測快取。"""
+    _FALLBACK_CACHE.clear()
+
+
 def guess_word(client: LLMClient, sentence: str, fragment: str) -> Optional[str]:
     """
     請 LLM 依句子上下文推測「fragment」最可能對應的正確辭典詞彙。
+
+    內建多重防護機制：
+    1. 詞彙級推測快取：相同上下文或片段直接命中快取，大幅縮減重複 LLM 呼叫。
+    2. Token 產出上限 (num_predict=50)：防止小型模型無限重複生成造成逾時。
+    3. 例外隔離：遭遇網路逾時或連線異常時自動降級略過，絕不崩潰管線程序。
 
     Args:
         client: 實作 `LLMClient` 介面的物件（例如 `OllamaClient`）。
@@ -63,17 +76,30 @@ def guess_word(client: LLMClient, sentence: str, fragment: str) -> Optional[str]
         fragment: 斷詞後查無字典結果的詞彙原文。
 
     Returns:
-        推測出的詞彙字串；以下情況一律回傳 `None`（呼叫端應視為「猜不到」，
-        跳過該詞、記一筆 fallback 失敗，不中斷整體流程）：
-        - LLM 回應不是合法 JSON 或缺少必要欄位
-        - LLM 明確回傳空字串（代表 LLM 自己判斷也猜不到）
+        推測出的詞彙字串；猜不到、格式不符或超時異常時一律回傳 `None`。
     """
+    cache_key = f"{sentence.strip()}::{fragment.strip()}"
+    if cache_key in _FALLBACK_CACHE:
+        return _FALLBACK_CACHE[cache_key]
+
     prompt = FALLBACK_PROMPT_TEMPLATE.format(sentence=sentence, fragment=fragment)
-    raw_response = client.generate(prompt)
+    try:
+        try:
+            raw_response = client.generate(prompt, num_predict=50)
+        except TypeError:
+            raw_response = client.generate(prompt)
+    except Exception as e:
+        print(f"  [提示] LLM 辭典推測超時或連線異常 (片段='{fragment}'): {e}，自動跳過此詞推測...", flush=True)
+        _FALLBACK_CACHE[cache_key] = None
+        return None
+
     json_text = _extract_json_text(raw_response)
     try:
         data = json.loads(json_text)
         result = LLMFallbackResult(**data)
+        guessed = result.guessed_word.strip() or None
+        _FALLBACK_CACHE[cache_key] = guessed
+        return guessed
     except (json.JSONDecodeError, TypeError, ValueError):
+        _FALLBACK_CACHE[cache_key] = None
         return None
-    return result.guessed_word or None

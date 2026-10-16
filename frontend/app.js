@@ -19,6 +19,7 @@ const API_BASE = ""; // 與後端同源（由 FastAPI 掛載靜態檔案提供�
 let currentJobId = null;
 let pollTimer = null;
 let lastAvailableChannels = [];
+let lastLogId = 0;
 
 const MAX_DISPLAY_ROWS = 200; // 結果筆數可能高達上萬筆，畫面只顯示前 N 筆，完整資料請用匯出功能
 
@@ -118,11 +119,17 @@ async function startJob() {
   // --- 測試用參數結束 ---
 
   const startBtn = document.getElementById("start-btn");
+  const cancelBtn = document.getElementById("cancel-btn");
   startBtn.disabled = true;
+  cancelBtn.style.display = "inline-block";
+  cancelBtn.disabled = false;
   document.getElementById("job-status-line").textContent = "上傳中...";
   document.getElementById("results-controls").hidden = true;
   document.getElementById("results-table").hidden = true;
   lastAvailableChannels = [];
+  lastLogId = 0;
+  const logBox = document.getElementById("realtime-log-box");
+  if (logBox) logBox.textContent = "[系統] 正在讀取並上傳影片檔案至伺服器...\n";
 
   try {
     const resp = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: form });
@@ -130,23 +137,99 @@ async function startJob() {
     if (!resp.ok) throw new Error(body.detail || `HTTP ${resp.status}`);
 
     currentJobId = body.job_id;
+    try { sessionStorage.setItem("currentJobId", currentJobId); } catch (_) {}
     document.getElementById("job-status-line").textContent =
       `工作已建立：${currentJobId}（狀態：${body.status}）`;
+    appendLogMessage(`[系統] 伺服器已建立任務 ${currentJobId}，啟動背景管線處理...`);
     startPolling();
   } catch (e) {
     document.getElementById("job-status-line").textContent = `上傳失敗：${e.message}`;
+    appendLogMessage(`[錯誤] 影片上傳失敗：${e.message}`);
     startBtn.disabled = false;
+    cancelBtn.style.display = "none";
   }
 }
 
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(pollStatus, 2000);
+  pollTimer = setInterval(pollStatus, 1000);
   pollStatus();
+}
+
+function appendLogMessage(msg) {
+  const box = document.getElementById("realtime-log-box");
+  if (!box) return;
+  if (box.textContent.trim() === "尚未開始處理影片..." || box.textContent.includes("尚未開始處理影片...")) {
+    box.textContent = "";
+  }
+  box.textContent += (box.textContent ? "\n" : "") + msg;
+  if (document.getElementById("autoscroll-toggle")?.checked) {
+    box.scrollTop = box.scrollHeight;
+  }
+}
+
+async function pollLogs() {
+  if (!currentJobId) return;
+  try {
+    const resp = await fetch(`${API_BASE}/api/jobs/${currentJobId}/logs?after_id=${lastLogId}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.logs && data.logs.length > 0) {
+      for (const item of data.logs) {
+        appendLogMessage(item.message);
+        if (item.id > lastLogId) {
+          lastLogId = item.id;
+        }
+      }
+    }
+  } catch (e) {
+    // 忽略暫態輪詢錯誤
+  }
+}
+
+async function cancelJob() {
+  if (!currentJobId) return;
+  if (!confirm("確定要中斷目前的影片處理運算嗎？")) return;
+  const cancelBtn = document.getElementById("cancel-btn");
+  cancelBtn.disabled = true;
+  appendLogMessage("[系統] 正在發送中斷請求...");
+  try {
+    const resp = await fetch(`${API_BASE}/api/jobs/${currentJobId}/cancel`, { method: "POST" });
+    const data = await resp.json();
+    appendLogMessage(`[系統] ${data.message || "已送出中斷請求"}`);
+  } catch (e) {
+    appendLogMessage(`[錯誤] 發送中斷請求失敗：${e.message}`);
+    cancelBtn.disabled = false;
+  }
+}
+
+async function shutdownSystem() {
+  const proceed = confirm(
+    "【關閉系統確認】\n\n確定要結束後端伺服器並關閉系統嗎？\n" +
+    "（這將會終止 CMD 視窗與背景服務，釋放所有運算資源與通訊埠）"
+  );
+  if (!proceed) return;
+
+  appendLogMessage("[系統] 正在發送關閉伺服器指令...");
+  try {
+    const resp = await fetch(`${API_BASE}/api/system/shutdown`, { method: "POST" });
+    const data = await resp.json();
+    document.getElementById("job-status-line").innerHTML =
+      `<strong style="color: #b3261e;">🛑 系統已成功關閉。後端程序已終止，您可以安心關閉此瀏覽器分頁。</strong>`;
+    appendLogMessage(`[系統] ${data.message || "服務已終止"}`);
+    document.getElementById("start-btn").disabled = true;
+    document.getElementById("system-shutdown-btn").disabled = true;
+    document.getElementById("cancel-btn").style.display = "none";
+  } catch (e) {
+    appendLogMessage(`[系統] 連線已中斷（伺服器已成功關閉）：${e.message}`);
+    document.getElementById("job-status-line").innerHTML =
+      `<strong style="color: #b3261e;">🛑 系統已關閉或連線中斷。</strong>`;
+  }
 }
 
 async function pollStatus() {
   if (!currentJobId) return;
+  await pollLogs();
   const resp = await fetch(`${API_BASE}/api/jobs/${currentJobId}/status`);
   if (!resp.ok) return;
   const body = await resp.json();
@@ -158,10 +241,12 @@ async function pollStatus() {
   renderStageTiming(body.stages || []);
   updateChannelSelect(body.available_channels || []);
 
-  if (body.status === "done" || body.status === "failed") {
+  if (body.status === "done" || body.status === "failed" || body.status === "cancelled") {
     clearInterval(pollTimer);
     pollTimer = null;
+    await pollLogs();
     document.getElementById("start-btn").disabled = false;
+    document.getElementById("cancel-btn").style.display = "none";
   }
 }
 
@@ -271,7 +356,26 @@ async function exportResults() {
 document.getElementById("env-check-btn").addEventListener("click", runEnvironmentCheck);
 document.getElementById("channel1-toggle").addEventListener("change", toggleChannel1Engines);
 document.getElementById("start-btn").addEventListener("click", startJob);
+document.getElementById("cancel-btn").addEventListener("click", cancelJob);
+document.getElementById("system-shutdown-btn").addEventListener("click", shutdownSystem);
+document.getElementById("clear-logs-btn").addEventListener("click", () => {
+  const box = document.getElementById("realtime-log-box");
+  if (box) box.textContent = "";
+});
 document.getElementById("channel-select").addEventListener("change", loadResultsForSelectedChannel);
 document.getElementById("export-btn").addEventListener("click", exportResults);
 
 toggleChannel1Engines();
+
+// 自動復原進行中或最近一次工作
+try {
+  const savedJobId = sessionStorage.getItem("currentJobId");
+  if (savedJobId) {
+    currentJobId = savedJobId;
+    const logBox = document.getElementById("realtime-log-box");
+    if (logBox && (logBox.textContent.trim() === "尚未開始處理影片..." || !logBox.textContent.trim())) {
+      logBox.textContent = `[系統] 載入既有工作 ${currentJobId}，正在同步最新狀態與日誌...\n`;
+    }
+    startPolling();
+  }
+} catch (_) {}

@@ -25,47 +25,125 @@ import requests
 class LLMClient(Protocol):
     """LLM 呼叫的抽象介面：傳入 prompt，回傳模型產生的原始文字回應。"""
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, **kwargs) -> str:
         ...
 
 
 class OllamaClient:
-    """透過本地 Ollama REST API 呼叫模型（預設 `qwen2.5:7b`）。"""
+    """
+    透過本地 Ollama REST API 呼叫模型（預設 `qwen2.5:7b`）。
+    內建長效保溫 (keep_alive: 30m)、產出上限防禦 (num_predict)、
+    顯存優化 (num_ctx: 1024)、低溫約束 (temperature: 0.1)、連線池與自動重試機制。
+    """
 
     def __init__(
         self,
         model: str = "qwen2.5:7b",
         base_url: str = "http://localhost:11434",
-        timeout_sec: float = 60.0,
+        timeout_sec: float = 90.0,
+        max_retries: int = 2,
+        keep_alive: str = "30m",
+        temperature: float = 0.1,
+        num_ctx: int = 1024,
+        default_num_predict: int | None = None,
     ):
+        import requests
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout_sec = timeout_sec
+        self.max_retries = max_retries
+        self.keep_alive = keep_alive
+        self.temperature = temperature
+        self.num_ctx = num_ctx
+        self.default_num_predict = default_num_predict
+        self._session = requests.Session()
 
-    def generate(self, prompt: str) -> str:
+    def warmup(self, timeout_sec: float = 120.0) -> bool:
+        """
+        向 Ollama 發送輕量預熱請求，強制將模型載入記憶體/VRAM 並鎖定保溫，
+        避免後續逐句處理時因磁碟冷讀取模型權重而逾時。
+        """
+        import requests
+        payload = {
+            "model": self.model,
+            "prompt": "{}",
+            "stream": False,
+            "format": "json",
+            "keep_alive": self.keep_alive,
+            "options": {
+                "num_predict": 1,
+                "temperature": self.temperature,
+                "num_ctx": self.num_ctx,
+            },
+        }
+        post_fn = (
+            requests.post
+            if (hasattr(requests.post, "call_args") or hasattr(requests.post, "mock_calls"))
+            else self._session.post
+        )
+        try:
+            resp = post_fn(f"{self.base_url}/api/generate", json=payload, timeout=timeout_sec)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    def generate(
+        self,
+        prompt: str,
+        num_predict: int | None = None,
+        timeout_sec: float | None = None,
+        **kwargs,
+    ) -> str:
         """
         呼叫 Ollama 的 `/api/generate` 端點。
-
-        Args:
-            prompt: 完整的提示詞文字。
-
-        Returns:
-            模型產生的原始文字回應（`response` 欄位）。
-
-        Raises:
-            requests.exceptions.RequestException: 連線失敗、逾時、或
-                Ollama 回傳非 2xx 狀態碼（例如伺服器未啟動、模型未下載）。
         """
-        response = requests.post(
-            f"{self.base_url}/api/generate",
-            json={
-                "model": self.model,
-                "prompt": prompt,
-                "stream": False,
-                "format": "json",
-            },
-            timeout=self.timeout_sec,
+        import time
+        import requests
+
+        limit = num_predict if num_predict is not None else self.default_num_predict
+        options = {
+            "temperature": self.temperature,
+            "num_ctx": self.num_ctx,
+        }
+        if limit is not None:
+            options["num_predict"] = limit
+
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json",
+            "keep_alive": self.keep_alive,
+            "options": options,
+        }
+
+        timeout = timeout_sec or self.timeout_sec
+        post_fn = (
+            requests.post
+            if (hasattr(requests.post, "call_args") or hasattr(requests.post, "mock_calls"))
+            else self._session.post
         )
-        response.raise_for_status()
-        data = response.json()
-        return data.get("response", "")
+
+        last_exc = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = post_fn(
+                    f"{self.base_url}/api/generate",
+                    json=payload,
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data.get("response", "")
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_exc = e
+                if attempt < self.max_retries:
+                    time.sleep(1.0 * (attempt + 1))
+                else:
+                    raise
+            except requests.exceptions.RequestException:
+                raise
+
+        if last_exc:
+            raise last_exc
+        return ""

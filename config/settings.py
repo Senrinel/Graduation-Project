@@ -5,6 +5,8 @@
 方便日後調校與單元測試時覆寫。
 """
 
+import os
+
 SAMPLING = {
     "rate_fps": 1.0,  # Step 2：預設採樣率
 }
@@ -77,6 +79,8 @@ API_CONFIG = {
     #   2) /api/jobs/{id}/results 預設回傳 default_results_channel，其餘透過 ?channel= 查詢參數指定。
     #   3) 工作狀態採輕量持久化（SQLite），伺服器重啟後仍可查詢先前工作的進度/結果。
     #   4) 匯出僅支援 CSV（Anki 匯入本身就是吃 CSV，不需要另外接 anki_exporter.py）。
+    "host": os.environ.get("HOST", "127.0.0.1"),
+    "port": int(os.environ.get("PORT", "8000")),
     "job_db_path": "data/jobs.sqlite3",
     "upload_dir": "data/uploads",
     "data_output_root": "data/output",
@@ -87,6 +91,19 @@ API_CONFIG = {
     ],
     "default_results_channel": "channel3",
     "denoise_mode": "on",  # 上傳影片跑完整流程時使用哪一種前處理版本；denoise 最終決策仍延後到專案尾聲
-    "llm_model": "qwen2.5:7b",
-    "llm_base_url": "http://localhost:11434",
+    "llm_model": os.environ.get("LLM_MODEL", "qwen2.5:7b"),
+    "llm_base_url": os.environ.get("LLM_BASE_URL", "http://localhost:11434"),
+    "llm_timeout_sec": float(os.environ.get("LLM_TIMEOUT_SEC", "90.0")),
+}
+
+LLM_CONFIG = {
+    "default_model": API_CONFIG["llm_model"],
+    "lightweight_model": "qwen2.5:1.5b",
+    "base_url": API_CONFIG["llm_base_url"],
+    "timeout_sec": API_CONFIG["llm_timeout_sec"],
+    "warmup_timeout_sec": 120.0,
+    "keep_alive": os.environ.get("LLM_KEEP_ALIVE", "30m"),
+    "temperature": 0.1,
+    "max_retries": 2,
+    "num_ctx": 1024,
 }

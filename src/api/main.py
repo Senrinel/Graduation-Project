@@ -74,10 +74,39 @@ def create_app(
     data_output_root = data_output_root or API_CONFIG["data_output_root"]
     upload_dir = Path(upload_dir or API_CONFIG["upload_dir"])
 
-    app = FastAPI(title="OCR Subtitle Learning System")
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app_instance: FastAPI):
+        import os
+        if not os.environ.get("NO_BROWSER") and not os.environ.get("PYTEST_CURRENT_TEST"):
+            import threading
+            import time
+            import webbrowser
+
+            def _launch():
+                time.sleep(1.0)
+                host = API_CONFIG.get("host", "127.0.0.1")
+                port = API_CONFIG.get("port", 8000)
+                webbrowser.open(f"http://{host}:{port}")
+
+            threading.Thread(target=_launch, daemon=True).start()
+        yield
+
+    app = FastAPI(title="OCR Subtitle Learning System", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def add_no_cache_header(request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.endswith((".js", ".css", ".html")):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
 
     app.state.job_store = JobStore(job_db_path)
     app.state.data_output_root = data_output_root
@@ -199,6 +228,29 @@ def create_app(
         )
         return job
 
+    @app.get("/api/jobs/{job_id}/logs")
+    async def get_job_logs(job_id: str, request: Request, after_id: int = Query(default=0, ge=0)):
+        """取得該工作之即時日誌清單，支援增量查詢（after_id）。"""
+        job_store: JobStore = request.app.state.job_store
+        job = job_store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"找不到工作 job_id={job_id}")
+        logs = job_store.list_logs(job_id, after_id=after_id)
+        return {"job_id": job_id, "logs": logs, "status": job["status"]}
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: str, request: Request):
+        """中斷目前執行中的影片處理工作（成品功能）。"""
+        job_store: JobStore = request.app.state.job_store
+        job = job_store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"找不到工作 job_id={job_id}")
+        from src.api.pipeline_runner import request_job_cancellation
+        request_job_cancellation(job_id)
+        job_store.update_job(job_id, status="cancelled", error="使用者手動請求中斷")
+        job_store.record_log(job_id, "[中斷請求] 使用者透過介面觸發中斷運算")
+        return {"job_id": job_id, "status": "cancelling", "message": "已發送中斷請求"}
+
     @app.get("/api/jobs/{job_id}/results")
     async def get_job_results(
         job_id: str,
@@ -280,6 +332,29 @@ def create_app(
         return FileResponse(
             path, media_type="text/csv", filename=f"{job['video_id']}_{channel}_export.csv",
         )
+
+    @app.post("/api/system/shutdown")
+    async def shutdown_system(request: Request, force: bool = Query(default=False)):
+        """關閉系統服務並結束後端程序（成品功能）。"""
+        import os
+        import threading
+        import time
+
+        def _terminate():
+            time.sleep(0.5)
+            if force:
+                os._exit(0)
+            else:
+                try:
+                    import signal
+                    os.kill(os.getpid(), signal.SIGTERM)
+                except Exception:
+                    pass
+                time.sleep(1.0)
+                os._exit(0)
+
+        threading.Thread(target=_terminate, daemon=True).start()
+        return {"status": "shutting_down", "message": "系統伺服器正在關閉，後端程序即將結束。"}
 
     # 掛載 Phase 7 前端頁面（放在所有 /api/* 路由「之後」註冊，確保 /api/*
     # 一律先被上面的具名路由比對到，不會被這裡的靜態檔案掛載攔截）。

@@ -69,17 +69,28 @@ def annotate_subtitle(client: LLMClient, cleaned_text: str) -> Optional[LLMAnnot
     """
     呼叫 LLM 對一句已清理過的字幕文字進行修正與標註。
 
+    內建防護機制：
+    1. Token 產出上限 (num_predict=350)：避免小模型生成冗長廢話或迴圈。
+    2. 例外隔離：連線中斷或逾時自動轉為 None 並計入 error_count，不中斷整體管線。
+
     Args:
         client: 實作 `LLMClient` 介面的物件（例如 `OllamaClient`）。
         cleaned_text: 已經過 `clean_ocr_text` 與跨影格去重的字幕文字。
 
     Returns:
-        解析成功回傳 `LLMAnnotationResult`；LLM 回應不是合法 JSON、或
-        JSON 結構不符合預期欄位時回傳 `None`（呼叫端應計入 error_count，
-        跳過該句、不中斷整體流程）。
+        解析成功回傳 `LLMAnnotationResult`；LLM 回應不是合法 JSON、
+        欄位不符或呼叫超時時回傳 `None`（呼叫端計入 error_count，跳過該句繼續）。
     """
     prompt = PROMPT_TEMPLATE.format(ocr_text=cleaned_text)
-    raw_response = client.generate(prompt)
+    try:
+        try:
+            raw_response = client.generate(prompt, num_predict=350)
+        except TypeError:
+            raw_response = client.generate(prompt)
+    except Exception as e:
+        print(f"  [警告] LLM 字幕標註超時或連線異常 (字幕='{cleaned_text}'): {e}，自動跳過該句標註...", flush=True)
+        return None
+
     json_text = _extract_json_text(raw_response)
     try:
         data = json.loads(json_text)

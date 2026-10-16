@@ -63,10 +63,20 @@ def run(video_id: str, ocr_results_path: str, out_dir: str, model: str, base_url
     print(f"  跨影格去重後剩 {len(subtitles)} 句字幕")
 
     print(f"  LLM：{model} @ {base_url}")
-    client = OllamaClient(model=model, base_url=base_url)
+    client = OllamaClient(model=model, base_url=base_url, default_num_predict=350)
+    if hasattr(client, "warmup"):
+        print(f"  正在預熱並確認 LLM 模型 ({model}) 載入狀態...", flush=True)
+        w_ok = client.warmup()
+        if w_ok:
+            print(f"  [就緒] LLM 模型 ({model}) 已載入至記憶體/VRAM。", flush=True)
+        else:
+            print(f"  [提示] LLM 預熱略過或服務未響應，將於後續處理時嘗試連線。", flush=True)
 
     export_records: List[ExportRecord] = []
-    for subtitle in subtitles:
+    total_subs = len(subtitles)
+    for idx, subtitle in enumerate(subtitles, 1):
+        if total_subs <= 20 or idx % max(1, total_subs // 10) == 0 or idx == 1 or idx == total_subs:
+            print(f"  [Channel 2 進度] 正在標註字幕 {idx}/{total_subs}: {subtitle.text[:20]}...", flush=True)
         with builder.time_module("llm_call"):
             result = annotate_subtitle(client, subtitle.text)
 

@@ -87,3 +87,37 @@ def test_store_persists_across_new_instances(tmp_path):
     assert job is not None
     assert job["status"] == "queued"
     assert len(job["stages"]) == 1
+
+
+def test_job_logs_recording_and_listing(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    store.create_job("job_log_test", "job_log_test", "video.mp4")
+
+    store.record_log("job_log_test", "Line 1: started")
+    store.record_log("job_log_test", "Line 2: processing")
+    store.record_log("job_log_test", "Line 3: done")
+
+    all_logs = store.list_logs("job_log_test")
+    assert len(all_logs) == 3
+    assert all_logs[0]["message"] == "Line 1: started"
+    assert all_logs[2]["message"] == "Line 3: done"
+
+    # 增量輪詢（after_id）
+    first_id = all_logs[0]["id"]
+    new_logs = store.list_logs("job_log_test", after_id=first_id)
+    assert len(new_logs) == 2
+    assert new_logs[0]["message"] == "Line 2: processing"
+
+    # 清除日誌
+    store.clear_logs("job_log_test")
+    assert store.list_logs("job_log_test") == []
+
+
+def test_cancelled_status_supported(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    store.create_job("job_cancel_test", "job_cancel_test", "v.mkv")
+    store.update_job("job_cancel_test", status="cancelled", error="使用者手動中斷")
+    job = store.get_job("job_cancel_test")
+    assert job["status"] == "cancelled"
+    assert job["error"] == "使用者手動中斷"
+

@@ -48,6 +48,7 @@ Phase 7 擴充（2026-07-26，使用者決策紀錄，見 PROJECT_NOTES.md 第 1
 from __future__ import annotations
 
 import contextlib
+import sys
 import time
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -59,6 +60,70 @@ from src.api.job_store import JobStore
 _OCR_DIRNAME = "ocr_on"
 
 CHANNEL1_ENGINES = ["okt", "komoran", "kkma", "mecab"]
+
+class JobCancelledError(Exception):
+    """使用者手動中斷工作時拋出之例外。"""
+    pass
+
+_CANCEL_REQUESTS: set[str] = set()
+
+def request_job_cancellation(job_id: str) -> None:
+    """請求中斷指定 job_id 的運算。"""
+    _CANCEL_REQUESTS.add(job_id)
+
+def is_job_cancelled(job_id: str, job_store: Optional[JobStore] = None) -> bool:
+    """判斷指定 job_id 是否已被請求中斷。"""
+    if job_id in _CANCEL_REQUESTS:
+        return True
+    if job_store:
+        try:
+            job = job_store.get_job(job_id)
+            if job and job.get("status") == "cancelled":
+                return True
+        except Exception:
+            pass
+    return False
+
+class JobLogTee:
+    """
+    同時將標準輸出寫入底層 stdout (即時 flush) 並寫入 JobStore 的 job_logs。
+    保證 CMD 視窗與 Web UI 能同步實時取得執行日誌。
+    """
+    def __init__(self, target_stream, job_store: JobStore, job_id: str):
+        self.target_stream = target_stream
+        self.job_store = job_store
+        self.job_id = job_id
+        self._buf = ""
+
+    def write(self, s: str) -> int:
+        ret = self.target_stream.write(s)
+        self.target_stream.flush()
+        self._buf += s
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            line = line.strip("\r")
+            if line:
+                try:
+                    self.job_store.record_log(self.job_id, line)
+                except Exception:
+                    pass
+        return ret
+
+    def flush(self) -> None:
+        self.target_stream.flush()
+        if self._buf.strip():
+            try:
+                self.job_store.record_log(self.job_id, self._buf.strip())
+            except Exception:
+                pass
+            self._buf = ""
+
+    def fileno(self):
+        return getattr(self.target_stream, "fileno", lambda: 1)()
+
+    def isatty(self):
+        return getattr(self.target_stream, "isatty", lambda: False)()
+
 
 # Phase 7 config_overrides 支援的鍵 -> 對應到 config/settings.py 哪個字典的哪個欄位。
 _CONFIG_OVERRIDE_TARGETS = {
@@ -147,12 +212,12 @@ def _default_stage_functions() -> dict:
     from scripts.run_channel1 import run as channel1
     from scripts.run_channel2 import run as channel2
     from scripts.run_channel3 import run as channel3
-    from src.ocr.gpu_check import get_gpu_info
+    from src.ocr.gpu_check import detect_compute_device
 
     return {
         "phase1": phase1, "phase2": phase2, "phase3": phase3,
         "channel1": channel1, "channel2": channel2, "channel3": channel3,
-        "gpu_check": get_gpu_info,
+        "gpu_check": detect_compute_device,
     }
 
 
@@ -210,6 +275,9 @@ def run_full_pipeline(
     `status="failed"` 並寫入錯誤訊息，確保前端一定看得到結果（成功或失敗），
     不會有「永遠查不到怎麼了」的狀態。
     """
+    old_stdout = sys.stdout
+    tee = JobLogTee(old_stdout, job_store, job_id)
+    sys.stdout = tee
     try:
         _run_full_pipeline_impl(
             job_id=job_id, video_path=video_path, job_store=job_store,
@@ -220,14 +288,25 @@ def run_full_pipeline(
             data_output_root=data_output_root, config_overrides=config_overrides,
             stage_functions=stage_functions,
         )
+    except JobCancelledError as e:
+        error_msg = str(e)
+        print(f"[中斷] 任務已依使用者要求停止運算：{error_msg} (job_id={job_id})", flush=True)
+        try:
+            job_store.update_job(job_id, status="cancelled", current_stage="cancelled", error=error_msg)
+        except Exception:
+            pass
     except Exception as e:  # noqa: BLE001 - 最外層安全網，見上方 docstring 說明
         error = f"[未預期例外，非個別階段內的錯誤] {type(e).__name__}: {e}"
+        print(f"[錯誤] {error}", flush=True)
         try:
             job_store.update_job(job_id, status="failed", current_stage="pipeline_setup", error=error)
         except Exception:
             # 連 job_store 本身都寫不進去的極端情況：這裡已經無能為力，
             # 但至少不會讓整個背景工作在完全無聲的狀態下消失。
             pass
+    finally:
+        tee.flush()
+        sys.stdout = old_stdout
 
 
 def _run_full_pipeline_impl(
@@ -249,6 +328,12 @@ def _run_full_pipeline_impl(
     stage_functions: Optional[dict],
 ) -> None:
     """`run_full_pipeline` 的實際邏輯（見該函式 docstring 說明外層安全網的設計原因）。"""
+    def _check_cancelled():
+        if is_job_cancelled(job_id, job_store):
+            raise JobCancelledError("使用者手動中斷運算")
+
+    _check_cancelled()
+
     video_id = job_id
     required_keys = ("phase1", "phase2", "phase3", "channel1", "channel2", "channel3", "gpu_check")
     if stage_functions is None:
@@ -271,6 +356,7 @@ def _run_full_pipeline_impl(
     ocr_csv = ocr_dir / "ocr_results.csv"
 
     with _temporary_settings_override(config_overrides):
+        _check_cancelled()
         # ---- Phase 1：影片匯入 / 影格採樣 ----
         ok, err = _run_stage(
             job_store, job_id, "phase1", fns["phase1"],
@@ -280,6 +366,7 @@ def _run_full_pipeline_impl(
             job_store.update_job(job_id, status="failed", current_stage="phase1", error=err)
             return
 
+        _check_cancelled()
         # ---- Phase 1 額外檢查：擷取到的影格數是否為 0（見 _count_manifest_rows 說明）----
         frame_count = _count_manifest_rows(frames_dir / "manifest.csv")
         if frame_count == 0:
@@ -292,6 +379,7 @@ def _run_full_pipeline_impl(
             job_store.update_job(job_id, status="failed", current_stage="phase1_frame_check", error=msg)
             return
 
+        _check_cancelled()
         # ---- Phase 2：前處理（denoise 開關見 Phase 7 擴充說明）----
         ok, err = _run_stage(
             job_store, job_id, "phase2", fns["phase2"],
@@ -301,15 +389,37 @@ def _run_full_pipeline_impl(
             job_store.update_job(job_id, status="failed", current_stage="phase2", error=err)
             return
 
-        # ---- GPU 檢查（不終止程式的版本，供 API 情境使用）----
+        _check_cancelled()
+        # ---- 硬體運算裝置偵測（優先 GPU，無則降級 CPU 相容運算）----
         job_store.update_job(job_id, current_stage="gpu_check")
         t0 = time.time()
         try:
-            gpu_info = fns["gpu_check"]()
-            gpu_ok = bool(gpu_info)
-            gpu_err = "" if gpu_ok else "未偵測到可用 GPU，本專案要求 OCR 必須使用 GPU 執行，工作終止。"
+            device_fn = fns.get("gpu_check")
+            if device_fn is None:
+                from src.ocr.gpu_check import detect_compute_device
+                device_fn = detect_compute_device
+            res = device_fn()
+            if isinstance(res, tuple):
+                use_gpu, device_type, gpu_info = res
+            elif isinstance(res, list):
+                gpu_info = res
+                use_gpu = bool(gpu_info)
+            else:
+                use_gpu = bool(res)
+                gpu_info = []
+
+            if use_gpu:
+                names = ", ".join(g["name"] for g in gpu_info) if gpu_info else "CUDA"
+                stage_msg = f"已啟用 GPU 加速運算 ({names})"
+            else:
+                stage_msg = "未偵測到可用 GPU，已自動降級使用 CPU 相容運算"
+
+            gpu_ok = True
+            gpu_err = stage_msg
+            print(f"[管線排程] {stage_msg}", flush=True)
         except Exception as e:  # noqa: BLE001
             gpu_ok, gpu_err = False, f"{type(e).__name__}: {e}"
+
         job_store.record_stage(
             job_id, "gpu_check", ok=gpu_ok, elapsed_sec=round(time.time() - t0, 2), error=gpu_err,
         )
@@ -317,6 +427,7 @@ def _run_full_pipeline_impl(
             job_store.update_job(job_id, status="failed", current_stage="gpu_check", error=gpu_err)
             return
 
+        _check_cancelled()
         # ---- Phase 3：OCR（需要 GPU，已於上一步確認可用）----
         ok, err = _run_stage(
             job_store, job_id, "phase3", fns["phase3"],
@@ -326,23 +437,40 @@ def _run_full_pipeline_impl(
             job_store.update_job(job_id, status="failed", current_stage="phase3", error=err)
             return
 
+        # ---- 清理 PyTorch 顯存快取，為後續 LLM 釋放完整 VRAM 資源 ----
+        try:
+            import gc
+            import torch
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                print("[顯存調度] Phase 3 OCR 完成，已釋放 PyTorch 顯示記憶體快取 (CUDA empty cache)，確保後續 LLM 具備充裕 VRAM。", flush=True)
+        except Exception:
+            pass
+
+        _check_cancelled()
         # ---- Channel 1：子引擎彼此獨立，個別失敗不影響其他子通道（Phase 7：可整體關閉／選子引擎）----
         if include_channel1:
             for engine in engines_to_run:
+                _check_cancelled()
                 _run_stage(
                     job_store, job_id, f"channel1_{engine}", fns["channel1"],
                     video_id, engine, str(ocr_csv), str(root / f"channel1_{engine}"), dict_db,
                 )
 
+        _check_cancelled()
         # ---- Channel 2：本地 LLM（可選；耗時最長）----
         if include_channel2:
+            _check_cancelled()
             _run_stage(
                 job_store, job_id, "channel2", fns["channel2"],
                 video_id, str(ocr_csv), str(root / "channel2"), model, base_url,
             )
 
+        _check_cancelled()
         # ---- Channel 3：混合通道（Phase 7：可整體關閉）----
         if include_channel3:
+            _check_cancelled()
             _run_stage(
                 job_store, job_id, "channel3", fns["channel3"],
                 video_id, str(ocr_csv), str(root / "channel3"), dict_db, model, base_url,
@@ -351,4 +479,5 @@ def _run_full_pipeline_impl(
     # 只要 phase1/2/3 都成功，即視為工作整體完成——即使某些 channel 失敗
     # （例如 Channel 2/3 需要的 Ollama 未啟動），其餘 channel 的結果仍可
     # 透過 /api/jobs/{id}/results?channel=... 個別查詢，因此不視為整體失敗。
+    _check_cancelled()
     job_store.update_job(job_id, status="done", current_stage="finished")

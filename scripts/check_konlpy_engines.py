@@ -23,7 +23,11 @@ Mecab-ko 優先嘗試 `python-mecab-ko`（純 pip 安裝，自帶字典，不需
 
 from __future__ import annotations
 
+import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 TEST_SENTENCE = "오늘 날씨가 정말 좋네요"
 
@@ -72,11 +76,38 @@ def check_mecab() -> dict:
     """
     檢查 Mecab-ko。
 
-    優先嘗試 `python-mecab-ko`（`pip install python-mecab-ko`，純 wheel
-    安裝、自帶編譯好的字典，不需系統編譯），這是實測驗證可行、最簡單的
-    安裝路徑。若該套件未安裝，才退回嘗試 `konlpy.tag.Mecab`（需要另外
-    編譯系統版 mecab 引擎 + mecab-ko-dic 字典，較繁瑣）。
+    依序嘗試：
+    1. mecab-python3 + mecab-ko-dic（現代跨平台預編譯 wheel，支援 Python 3.8 ~ 3.14+）
+    2. python-mecab-ko（舊版二進位 wheel）
+    3. konlpy.tag.Mecab（需系統編譯安裝 mecab 引擎 + mecab-ko-dic）
     """
+    # 1. 優先嘗試 mecab-python3 + mecab-ko-dic
+    try:
+        import mecab_ko_dic
+        import MeCab as _NativeMeCab
+
+        t0 = time.time()
+        tagger = _NativeMeCab.Tagger(mecab_ko_dic.MECAB_ARGS)
+        init_s = time.time() - t0
+        t0 = time.time()
+        node = tagger.parseToNode(TEST_SENTENCE)
+        pos = []
+        while node:
+            if node.surface:
+                pos.append((node.surface, node.feature.split(",")[0]))
+            node = node.next
+        morphs = [w for w, _ in pos]
+        run_s = time.time() - t0
+        print(f"[OK] Mecab-ko（mecab-python3 + mecab-ko-dic）: 初始化 {init_s:.3f}s，斷詞 {run_s*1000:.2f}ms")
+        print(f"     morphs = {morphs}")
+        print(f"     pos    = {pos}")
+        return {"available": True, "backend": "mecab-python3", "init_s": init_s, "run_s": run_s}
+    except (ImportError, ModuleNotFoundError):
+        pass
+    except Exception as e:
+        print(f"[失敗] mecab-python3 已安裝但執行失敗: {type(e).__name__}: {e}")
+
+    # 2. 嘗試 python-mecab-ko
     try:
         from mecab import MeCab as PyMecab
 
@@ -87,21 +118,21 @@ def check_mecab() -> dict:
         morphs = tagger.morphs(TEST_SENTENCE)
         pos = tagger.pos(TEST_SENTENCE)
         run_s = time.time() - t0
-        print(f"[OK] Mecab-ko（python-mecab-ko）: 初始化 {init_s:.3f}s，斷詞 {run_s*1000:.2f}ms")
+        backend_name = getattr(tagger, "_backend", "python-mecab-ko")
+        print(f"[OK] Mecab-ko（{backend_name}）: 初始化 {init_s:.3f}s，斷詞 {run_s*1000:.2f}ms")
         print(f"     morphs = {morphs}")
         print(f"     pos    = {pos}")
-        return {"available": True, "backend": "python-mecab-ko", "init_s": init_s, "run_s": run_s}
-    except ImportError:
+        return {"available": True, "backend": backend_name, "init_s": init_s, "run_s": run_s}
+    except (ImportError, ModuleNotFoundError):
         pass  # 尚未安裝 python-mecab-ko，往下嘗試 konlpy.tag.Mecab
     except Exception as e:
         print(f"[失敗] python-mecab-ko 已安裝但執行失敗: {type(e).__name__}: {e}")
-        return {"available": False, "error": str(e)}
 
     try:
         from konlpy.tag import Mecab
     except ImportError:
-        print("[未安裝] Mecab-ko：python-mecab-ko 與 konlpy.tag.Mecab 皆無法使用。")
-        print("         建議先執行: pip install python-mecab-ko（最簡單，沙盒已驗證可行）")
+        print("[未安裝] Mecab-ko：未安裝可用套件。")
+        print("         建議執行: pip install mecab-python3 mecab-ko-dic")
         return {"available": False}
 
     try:
@@ -117,12 +148,9 @@ def check_mecab() -> dict:
         print(f"     pos    = {pos}")
         return {"available": True, "backend": "konlpy.tag.Mecab", "init_s": init_s, "run_s": run_s}
     except Exception as e:
-        # konlpy.tag.Mecab 這個類別本身一定存在（隨 konlpy 安裝），
-        # 但底層 mecab 執行檔／字典若未編譯安裝或字典未正確連結，
-        # 實例化時就會丟例外。這是「尚未安裝完成」的正常情況。
         print("[未安裝] Mecab-ko：底層 mecab 執行檔／字典尚未編譯安裝完成。")
         print(f"         （konlpy 回報：{type(e).__name__}: {e}）")
-        print("         建議改用: pip install python-mecab-ko（不需編譯，見 LOCAL_TESTING.md）")
+        print("         建議安裝預編譯套件: pip install mecab-python3 mecab-ko-dic")
         return {"available": False, "error": str(e)}
 
 

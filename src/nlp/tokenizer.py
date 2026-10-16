@@ -76,16 +76,56 @@ class _KonlpyTokenizer:
 
 
 class _MecabTokenizer:
-    """包住 python-mecab-ko（見 LOCAL_TESTING.md 安裝說明）。"""
+    """包住 Mecab-ko（支援 mecab-python3 + mecab-ko-dic 或 python-mecab-ko）。"""
 
     def __init__(self):
-        from mecab import MeCab  # 延遲匯入，避免未安裝時影響其他引擎使用
-        self._tagger = MeCab()
+        # 1. 優先嘗試 mecab-python3 + mecab-ko-dic（現代跨平台 wheel，支援 Python 3.8 ~ 3.14+）
+        try:
+            import mecab_ko_dic
+            import MeCab as _NativeMeCab
+            self._native_tagger = _NativeMeCab.Tagger(mecab_ko_dic.MECAB_ARGS)
+            self._tagger = None
+            return
+        except Exception:
+            pass
+
+        # 2. 嘗試 python-mecab-ko (或通用相容層 mecab.py)
+        try:
+            from mecab import MeCab
+            self._tagger = MeCab()
+            self._native_tagger = None
+            return
+        except Exception:
+            pass
+
+        # 3. 嘗試 konlpy.tag.Mecab (若使用者有系統編譯版)
+        try:
+            from konlpy.tag import Mecab as _KonlpyMecab
+            self._tagger = _KonlpyMecab()
+            self._native_tagger = None
+            return
+        except Exception as e:
+            raise RuntimeError(
+                "未安裝或無法初始化 Mecab-ko 斷詞引擎。\n"
+                "可透過 pip 安裝預編譯套件：pip install mecab-python3 mecab-ko-dic\n"
+                "亦可改用推薦之 Komoran 引擎（或 Okt、Kkma）。"
+            ) from e
+
+    def pos(self, text: str) -> List[tuple[str, str]]:
+        if getattr(self, "_native_tagger", None) is not None:
+            node = self._native_tagger.parseToNode(text)
+            res = []
+            while node:
+                if node.surface:
+                    res.append((node.surface, node.feature.split(",")[0]))
+                node = node.next
+            return res
+        return self._tagger.pos(text)
 
     def tokenize(self, text: str) -> List[Token]:
         return [
             Token(word=word, pos=pos, dictionary_form=_to_dictionary_form("mecab", word, pos))
-            for word, pos in self._tagger.pos(text)
+            for word, pos in self.pos(text)
         ]
 
 
