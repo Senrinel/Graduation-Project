@@ -45,22 +45,52 @@ flowchart LR
 
 ## 二、 從無到有專案部署操作指引（初學者友善）
 
-本指南專為**一般使用者或電腦初學者**撰寫，提供最直觀、步驟化的「貼上即執行」部署體驗。
+本指南專為**一般使用者、協同開發者或電腦初學者**撰寫，提供最直觀、步驟化的「貼上即執行」部署體驗。
 
 ### 步驟 1：基礎環境安裝（僅需安裝一次）
-若您的電腦尚未安裝 Python 與 Java，請在 Windows 搜尋欄輸入 `powershell`，在 **Windows PowerShell** 上按滑鼠右鍵選擇 **「以系統管理員身分執行」**，接著直接複製貼上以下指令並按 Enter：
+若您的電腦尚未安裝 Python、Java 與 Git，請在 Windows 搜尋欄輸入 `powershell`，在 **Windows PowerShell** 上按滑鼠右鍵選擇 **「以系統管理員身分執行」**，接著直接複製貼上以下指令並按 Enter：
 
 ```powershell
-# 使用 Windows 內建套件管理員一鍵安裝 Python 3.11 與 OpenJDK 17
+# 使用 Windows 內建套件管理員一鍵安裝 Python 3.11、Java (OpenJDK 17) 與 Git 版本控制工具
 winget install Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements
 winget install Microsoft.OpenJDK.17 --silent --accept-package-agreements --accept-source-agreements
+winget install Git.Git --silent --accept-package-agreements --accept-source-agreements
 ```
-> 💡 *安裝完畢後，請將該 PowerShell 視窗關閉並重新開啟，以使系統環境變數生效。*
+> 💡 *安裝完畢後，請將該管理員 PowerShell 視窗關閉並重新開啟一般 PowerShell 視窗，以使系統環境變數生效。*
 
 ---
 
-### 步驟 2：執行一鍵部署腳本 (`deploy.ps1`)
-進入本專案資料夾目錄，在資料夾空白處按住鍵盤 `Shift` 鍵並按滑鼠右鍵，點擊 **「在此處開啟 PowerShell 視窗」**，輸入以下指令：
+### 步驟 2：從 GitHub 取得 / 同步專案原始碼 (Clone / Pull)
+在您預計存放專案的路徑（例如桌面或個人資料夾），開啟 PowerShell 並執行以下指令：
+
+#### 情況 A：首次取得專案（Clone 至本機）
+```powershell
+# 方式 1：使用 HTTPS 複製（初學者推薦，無需配置 SSH 金鑰）
+git clone https://github.com/Senrinel/Graduation-Project.git
+
+# 方式 2：使用 SSH 複製（已配置 GitHub SSH Key 者使用）
+git clone git@github.com:Senrinel/Graduation-Project.git
+
+# 複製完成後進入專案資料夾
+cd Graduation-Project
+```
+
+#### 情況 B：既有專案同步最新代碼（Pull 最新進度）
+若您先前已下載過專案，欲從 GitHub 獲取最新更新：
+```powershell
+# 進入專案資料夾
+cd Graduation-Project
+
+# 切換並拉取最新開發分支代碼
+git pull origin feature/deploy-and-optimization
+# 或直接拉取當前分支最新更新
+git pull
+```
+
+---
+
+### 步驟 3：執行一鍵部署腳本 (`deploy.ps1`)
+在專案根目錄下（確認當前路徑位於 `Graduation-Project`），輸入以下指令啟動全自動部署：
 
 ```powershell
 # 允許腳本執行並啟動自動化部署
@@ -78,7 +108,7 @@ Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
 
 ---
 
-### 步驟 3：快速啟動與日常使用 (`start.bat` / `start.ps1`)
+### 步驟 4：快速啟動與日常使用 (`start.bat` / `start.ps1`)
 日常使用時，**無需輸入任何複雜指令**：
 * **方式 A（最簡單）**：在專案根目錄下，直接滑鼠連點兩下 **`start.bat`**。
 * **方式 B（PowerShell）**：輸入 `.\start.ps1`。
