@@ -32,6 +32,11 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Optional
+import json
+from pydantic import BaseModel, Field, SecretStr
+from urllib.parse import urlparse
+import ipaddress
+from fastapi import Response
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -47,14 +52,34 @@ from config.settings import API_CONFIG, DICTIONARY_CONFIG
 from src.api.environment_check import check_environment
 from src.api.job_store import JobStore
 from src.api.pipeline_runner import run_full_pipeline
+from src.api.local_media import MODES, run_media_job, prepare_playback, MediaError
+from src.api.youtube_import import parse_video_id, fetch_korean_captions, write_youtube_results, YouTubeImportError
+from src.api.word_context import resolve_context
+from src.api.ai_context import AISessions, AIError, COOKIE_NAME, DEFAULT_MODEL, test_connection
 from src.api.results_reader import (
     ChannelResultsNotFound,
     VALID_CHANNELS,
     export_csv_path,
     list_available_channels,
     read_channel_results,
+    read_subtitles,
     resolve_frame_path,
 )
+
+
+class YouTubeRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
+class WordContextRequest(BaseModel):
+    word: str = Field(min_length=1, max_length=120)
+    timestamp: float = Field(ge=0, allow_inf_nan=False)
+    channel: str = "channel1_mecab"
+
+
+class AISettingsRequest(BaseModel):
+    api_key: SecretStr
+    model: str = Field(default=DEFAULT_MODEL, pattern=r"^[A-Za-z0-9_.-]{1,100}$")
 
 
 def create_app(
@@ -111,6 +136,55 @@ def create_app(
     app.state.job_store = JobStore(job_db_path)
     app.state.data_output_root = data_output_root
     app.state.upload_dir = upload_dir
+    app.state.ai_sessions = AISessions()
+
+    def check_settings_origin(request: Request, write: bool = False):
+        origin = request.headers.get("origin")
+        expected = f"{request.url.scheme}://{request.url.netloc}"
+        if origin and origin != expected:
+            raise HTTPException(status_code=403, detail="請從專案網站內設定 AI。")
+        if write and origin != expected:
+            raise HTTPException(status_code=403, detail="請從專案網站內設定 AI。")
+        # This project has no login system yet; do not expose credential setup over plain remote HTTP.
+        if request.url.scheme != "https":
+            host = request.url.hostname or ""
+            try:
+                local = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                local = host == "localhost"
+            if not local:
+                raise HTTPException(status_code=403, detail="遠端使用 AI 設定需要 HTTPS。")
+
+    @app.get("/api/ai/settings")
+    def get_ai_settings(request: Request, response: Response):
+        check_settings_origin(request)
+        response.headers["Cache-Control"] = "no-store"
+        config = request.app.state.ai_sessions.get(request.cookies.get(COOKIE_NAME))
+        return {"configured": bool(config), "model": config["model"] if config else DEFAULT_MODEL}
+
+    @app.post("/api/ai/settings")
+    def set_ai_settings(payload: AISettingsRequest, request: Request, response: Response):
+        check_settings_origin(request, write=True)
+        key = payload.api_key.get_secret_value().strip()
+        if not 8 <= len(key) <= 512:
+            raise HTTPException(status_code=400, detail="請填入有效的 Gemini API 金鑰。")
+        try:
+            test_connection(key, payload.model)
+            token = request.app.state.ai_sessions.save(key, payload.model, request.cookies.get(COOKIE_NAME))
+        except AIError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        response.set_cookie(COOKIE_NAME, token, httponly=True, secure=request.url.scheme == "https",
+                            samesite="strict", max_age=8*3600)
+        response.headers["Cache-Control"] = "no-store"
+        return {"configured": True, "model": payload.model}
+
+    @app.delete("/api/ai/settings")
+    def clear_ai_settings(request: Request, response: Response):
+        check_settings_origin(request, write=True)
+        request.app.state.ai_sessions.clear(request.cookies.get(COOKIE_NAME))
+        response.delete_cookie(COOKIE_NAME, httponly=True, samesite="strict")
+        response.headers["Cache-Control"] = "no-store"
+        return {"configured": False, "model": DEFAULT_MODEL}
 
     # ------------------------------------------------------------------
     # Phase 7：測試期間方便操作的功能區域（使用者決策紀錄，2026-07-26，見
@@ -118,6 +192,26 @@ def create_app(
     # 拿掉這個路由 + `src/api/environment_check.py` 這個檔案即可，不影響
     # 其他任何路由。
     # ------------------------------------------------------------------
+    @app.post("/api/youtube/import")
+    def import_youtube(payload: YouTubeRequest, request: Request):
+        try:
+            video_id = parse_video_id(payload.url)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        try:
+            fetched = fetch_korean_captions(video_id)
+            job_id = uuid.uuid4().hex
+            source = write_youtube_results(
+                Path(request.app.state.data_output_root) / job_id,
+                video_id, fetched, DICTIONARY_CONFIG["index_db_path"],
+            )
+        except YouTubeImportError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        store = request.app.state.job_store
+        store.create_job(job_id, job_id, f"YouTube {video_id}", include_channel2=False)
+        store.update_job(job_id, status="done", current_stage="youtube_subtitles")
+        return {"job_id": job_id, "source": source}
+
     @app.get("/api/environment")
     async def get_environment(
         request: Request,
@@ -134,6 +228,10 @@ def create_app(
         background_tasks: BackgroundTasks,
         request: Request,
         file: UploadFile = File(...),
+        recognition_mode: Optional[str] = Form(None),
+        recognition_seconds: float = Form(60.0, ge=0, le=14400, allow_inf_nan=False),
+        recognition_fps: float = Form(1.0, ge=0.2, le=2, allow_inf_nan=False),
+        whisper_model: str = Form('small'),
         include_channel1: bool = Form(True),
         channel1_engines: Optional[str] = Form(
             None, description="逗號分隔的子引擎清單，例如 'okt,mecab'；留空表示全部 4 個",
@@ -160,6 +258,13 @@ def create_app(
         新增的「測試期間方便操作」參數（見 PROJECT_NOTES.md 第 16 節），成品
         完成後使用者會要求移除或改為固定值。
         """
+        # Some FastAPI versions interpret missing boolean form fields as unchecked.
+        # Preserve this API's documented True defaults while respecting explicit false.
+        submitted = await request.form()
+        include_channel1 = include_channel1 if "include_channel1" in submitted else True
+        include_channel2 = include_channel2 if "include_channel2" in submitted else True
+        include_channel3 = include_channel3 if "include_channel3" in submitted else True
+        denoise = denoise if "denoise" in submitted else True
         job_store: JobStore = request.app.state.job_store
         data_output_root = request.app.state.data_output_root
         upload_dir: Path = request.app.state.upload_dir
@@ -172,6 +277,16 @@ def create_app(
                 detail=f"不支援的影片格式：{ext or '(無副檔名)'}（可用：{allowed}）",
             )
 
+        media_config = None
+        if recognition_mode is not None:
+            if recognition_mode not in MODES:
+                raise HTTPException(400, detail='請選擇有效的影片辨識方式。')
+            if whisper_model not in {'tiny', 'base', 'small'}:
+                raise HTTPException(400, detail='本機語音模型僅支援 tiny、base、small。')
+            if recognition_mode.startswith('gemini_'):
+                media_config = request.app.state.ai_sessions.get(request.cookies.get(COOKIE_NAME))
+                if not media_config:
+                    raise HTTPException(400, detail='請先在 Gemini 設定填入自己的 API，或選擇不需 API 的本機模式。')
         job_id = uuid.uuid4().hex
         upload_dir.mkdir(parents=True, exist_ok=True)
         saved_path = upload_dir / f"{job_id}{ext}"
@@ -182,6 +297,16 @@ def create_app(
             job_id=job_id, video_id=job_id,
             original_filename=file.filename or "", include_channel2=include_channel2,
         )
+
+        if recognition_mode is not None:
+            background_tasks.add_task(
+                run_media_job, job_id=job_id, video_path=str(saved_path), job_store=job_store,
+                data_output_root=data_output_root,
+                dictionary_path=DICTIONARY_CONFIG.get('index_db_path'),
+                mode=recognition_mode, config=media_config,
+                limit=recognition_seconds, fps=recognition_fps, model_size=whisper_model,
+            )
+            return {'job_id': job_id, 'video_id': job_id, 'status': 'queued'}
 
         engines_list = (
             [e.strip() for e in channel1_engines.split(",") if e.strip()]
@@ -223,6 +348,16 @@ def create_app(
         if job is None:
             raise HTTPException(status_code=404, detail=f"找不到工作 job_id={job_id}")
 
+        source_path = Path(request.app.state.data_output_root) / job["video_id"] / "youtube.json"
+        if source_path.exists():
+            job["source"] = json.loads(source_path.read_text(encoding="utf-8"))["source"]
+        local_path = Path(request.app.state.data_output_root) / job['video_id'] / 'local.json'
+        if local_path.exists():
+            job['recognition'] = json.loads(local_path.read_text(encoding='utf-8'))['source']
+        ext=Path(job.get('original_filename') or '').suffix.lower()
+        if ext in API_CONFIG['allowed_video_extensions'] and (Path(request.app.state.upload_dir)/(job_id+ext)).is_file():
+            job['video_url']=f'/api/jobs/{job_id}/video'
+            job['playback_ready']=(Path(request.app.state.data_output_root)/job['video_id']/'playback.mp4').is_file()
         job["available_channels"] = list_available_channels(
             request.app.state.data_output_root, job["video_id"],
         )
@@ -277,6 +412,60 @@ def create_app(
                 status_code=404,
                 detail=f"{e}（目前工作狀態：{job['status']}，目前階段：{job['current_stage']}）",
             ) from e
+
+    @app.post("/api/jobs/{job_id}/word-context")
+    def get_word_context(job_id: str, payload: WordContextRequest, request: Request):
+        job = request.app.state.job_store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="找不到這個工作")
+        if payload.channel not in VALID_CHANNELS:
+            raise HTTPException(status_code=400, detail="不支援的辨識通道")
+        try:
+            return resolve_context(Path(request.app.state.data_output_root), job["video_id"],
+                                   payload.word, payload.timestamp, payload.channel,
+                                   ai_config=request.app.state.ai_sessions.get(request.cookies.get(COOKIE_NAME)))
+        except (ValueError, ChannelResultsNotFound) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @app.get("/api/jobs/{job_id}/subtitles")
+    def get_job_subtitles(job_id: str, request: Request):
+        job = request.app.state.job_store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="找不到這個工作")
+        return {"subtitles": read_subtitles(request.app.state.data_output_root, job["video_id"])}
+
+    @app.post("/api/jobs/{job_id}/prepare-video")
+    def prepare_job_video(job_id: str, request: Request):
+        job=request.app.state.job_store.get_job(job_id)
+        if job is None:
+            raise HTTPException(404, detail='找不到這個工作')
+        ext=Path(job.get('original_filename') or '').suffix.lower()
+        folder=Path(request.app.state.upload_dir).resolve()
+        path=(folder/(job_id+ext)).resolve()
+        if ext not in API_CONFIG['allowed_video_extensions'] or path.parent!=folder or not path.is_file():
+            raise HTTPException(404, detail='找不到原影片，請重新選取')
+        try:
+            prepare_playback(path,Path(request.app.state.data_output_root)/job['video_id'])
+        except MediaError as error:
+            raise HTTPException(400, detail=str(error)) from error
+        return {'video_url':f'/api/jobs/{job_id}/video?compatible=1'}
+
+    @app.get("/api/jobs/{job_id}/video")
+    def get_job_video(job_id: str, request: Request):
+        job = request.app.state.job_store.get_job(job_id)
+        if job is None:
+            raise HTTPException(404, detail='找不到這個工作')
+        ext = Path(job.get('original_filename') or '').suffix.lower()
+        if ext not in API_CONFIG['allowed_video_extensions']:
+            raise HTTPException(404, detail='這個工作沒有本機影片')
+        folder = Path(request.app.state.upload_dir).resolve()
+        path = (folder / (job_id + ext)).resolve()
+        if path.parent != folder or not path.is_file():
+            raise HTTPException(404, detail='原影片已移除，請重新選取影片')
+        proxy=Path(request.app.state.data_output_root)/job['video_id']/'playback.mp4'
+        if proxy.exists():path=proxy
+        return FileResponse(path, media_type='video/mp4' if path.suffix=='.mp4' else None,
+                            headers={'Cache-Control':'private, no-cache'})
 
     @app.get("/api/jobs/{job_id}/frame")
     async def get_job_frame(job_id: str, request: Request, timestamp: float = Query(...)):
