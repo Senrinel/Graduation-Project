@@ -210,9 +210,10 @@ window.Learning = (() => {
   }
   function renderSentence(text, line) {
     // Match longest dictionary words first. Lemmas absent from the sentence are shown separately.
+    // Subtitle lines are contiguous (end == next start), so an overlap window would
+    // pull in neighbouring lines' words. word-context also looks up by exact start.
     const contextual = records.filter(record => Number.isFinite(record.timestamp_start) &&
-      (source ? Math.abs(record.timestamp_start - line.start) < 0.002 :
-        record.timestamp_start <= line.end + 0.2 && (record.timestamp_end ?? record.timestamp_start) >= line.start - 0.2));
+      Math.abs(record.timestamp_start - line.start) < 0.002);
     const words = [...new Set(contextual.map(record => String(record.原文 || '').trim()).filter(Boolean))].sort((a,b) => b.length-a.length);
     const shown = new Set();
     for (const part of line.text.split(/(\s+)/)) {
